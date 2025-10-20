@@ -208,5 +208,8 @@ __marimo__/
 
 /.DS_Store
 /note.txt
+/note.text
+/fredapi.txt
+/stock_index_world_map.html
 /functions.cpython
 /__pycache__/functions.cpython-313.pyc
