@@ -50,6 +50,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Helper Functions
+def make_cnn_api_request(url, max_retries=3, backoff_factor=1.0, timeout=10):
+    """
+    Make an API request to CNN Business with retry logic.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=max_retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[500, 502, 503, 504]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    
+    try:
+        response = session.get(url, timeout=timeout)
+        return response
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed: {e}")
+        return None
+
 def fetch_stock_data(ticker, period='2y'):
     """Fetch stock data (no caching for ticker object)"""
     try:
@@ -860,87 +881,45 @@ def main():
             
             st.plotly_chart(fig_dual, use_container_width=True)
     
-    # News & Holdings (Optional sections)
-    if show_news:
-        # News & Information
-        st.markdown("---")
-        st.markdown("## 📰 Latest News")
+    # News Section - Always show
+    st.markdown("---")
+    st.markdown("## 📰 Latest News")
     
     try:
-        # Force fresh fetch of news
-        news = []
-        try:
-            # Try to get news directly from ticker
-            ticker_news = stock_obj.get_news() if hasattr(stock_obj, 'get_news') else stock_obj.news
-            if ticker_news:
-                news = ticker_news
-        except:
-            # Fallback: try news attribute
-            if hasattr(stock_obj, 'news'):
-                news = stock_obj.news
-        
-        if news and len(news) > 0:
+        news = getattr(stock_obj, 'news', None)
+        if not news:
+            st.info("📭 No news available for this stock")
+        else:
+            st.write(f"*{len(news)} articles found*")
+            st.markdown("")
+            
             news_count = 0
-            for article in news[:15]:  # Try more articles to find valid ones
-                # Extract title from various possible fields
-                title = None
-                for title_field in ['title', 'headline', 'summary']:
-                    if article.get(title_field):
-                        title = str(article[title_field])
-                        if len(title) > 10:  # Ensure it's a real title
-                            break
-                
-                # Extract link
-                link = None
-                for link_field in ['link', 'url', 'canonical_url', 'guid']:
-                    if article.get(link_field):
-                        link = str(article[link_field])
-                        break
-                
-                # Extract publisher/source
-                publisher = None
-                if article.get('publisher'):
-                    publisher = str(article['publisher'])
-                elif article.get('source'):
-                    src = article['source']
-                    if isinstance(src, dict):
-                        publisher = src.get('name') or src.get('id')
-                    else:
-                        publisher = str(src)
-                
-                # Extract date
-                pub_date = None
-                for date_field in ['providerPublishTime', 'publish_time', 'published', 'pubDate']:
-                    if article.get(date_field):
+            for i, article in enumerate(news[:10], 1):
+                try:
+                    content = article.get('content', {}) if isinstance(article, dict) else {}
+                    provider = (content.get('provider', {}) if isinstance(content, dict) else {}).get('displayName', 'Unknown')
+                    summary = content.get('summary') or content.get('description') or content.get('title') or 'No summary'
+                    pub_date = content.get('pubDate') or content.get('displayTime') or article.get('pubDate') or article.get('date') or 'Unknown date'
+                    
+                    if pub_date and pub_date != 'Unknown date':
                         try:
-                            date_val = article[date_field]
-                            if isinstance(date_val, (int, float)):
-                                pub_date = datetime.fromtimestamp(date_val).strftime('%b %d, %Y')
-                            else:
-                                pub_date = pd.to_datetime(date_val).strftime('%b %d, %Y')
-                            break
+                            pub_date = datetime.fromisoformat(str(pub_date).replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M:%S')
                         except:
-                            continue
-                
-                # Only show if we have a valid title
-                if title and len(title) > 10:
-                    display_link = link if link else '#'
-                    display_publisher = publisher if publisher else 'Unknown Source'
-                    display_date = f" • {pub_date}" if pub_date else ""
+                            pub_date = str(pub_date)
                     
-                    st.markdown(f"""
-                    **[{title}]({display_link})**  
-                    *{display_publisher}*{display_date}
-                    """)
+                    summary_short = (summary[:150] + '...') if isinstance(summary, str) and len(summary) > 150 else summary
                     
+                    st.markdown(f"**{i}. {provider}**")
+                    st.caption(f"{summary_short}")
+                    st.caption(f"*{pub_date}*")
+                    st.markdown("")
                     news_count += 1
-                    if news_count >= 5:
-                        break
+                    
+                except Exception as e:
+                    st.caption(f"{i}. Error loading article: {str(e)}")
             
             if news_count == 0:
                 st.info("📭 No recent news articles available for this stock")
-        else:
-            st.info("📭 No recent news articles available for this stock")
     except Exception as e:
         st.info(f"📭 News data temporarily unavailable")
     
@@ -954,32 +933,59 @@ def main():
             inst_holders = stock_obj.institutional_holders
             if inst_holders is not None and not inst_holders.empty:
                 st.markdown("### Top Institutional Holders")
-                for idx, row in inst_holders.head(5).iterrows():
+                
+                for idx, row in inst_holders.head(10).iterrows():
                     holder = row.get('Holder', 'Unknown')
                     shares = row.get('Shares', 0)
-                    pct_held = row.get('% Out', 0)
+                    
+                    # Try different column names for percentage
+                    pct_held = None
+                    for col in ['% Out', 'pctHeld', 'Percent Held', '% Held', 'Pct Held']:
+                        if col in row.index and row[col] is not None:
+                            pct_held = row[col]
+                            break
+                    
+                    # Display holder info
                     st.markdown(f"**{holder}**")
-                    st.caption(f"{humanize_number(shares)} shares ({pct_held*100:.2f}%)")
+                    if pct_held is not None and pct_held > 0:
+                        # Check if it's already in percentage form (> 1) or needs conversion
+                        pct_display = pct_held if pct_held > 1 else pct_held * 100
+                        st.caption(f"{humanize_number(shares)} shares ({pct_display:.2f}%)")
+                    else:
+                        st.caption(f"{humanize_number(shares)} shares")
             else:
                 st.info("No institutional holdings data available")
-        except:
-            st.info("No institutional holdings data available")
+        except Exception as e:
+            st.info(f"Institutional holdings error: {str(e)}")
     
     with col2:
         try:
             mutual_holders = stock_obj.mutualfund_holders
             if mutual_holders is not None and not mutual_holders.empty:
                 st.markdown("### Top Mutual Fund Holders")
-                for idx, row in mutual_holders.head(5).iterrows():
+                
+                for idx, row in mutual_holders.head(10).iterrows():
                     holder = row.get('Holder', 'Unknown')
                     shares = row.get('Shares', 0)
-                    pct_held = row.get('% Out', 0)
+                    
+                    # Try different column names for percentage
+                    pct_held = None
+                    for col in ['% Out', 'pctHeld', 'Percent Held', '% Held', 'Pct Held']:
+                        if col in row.index and row[col] is not None:
+                            pct_held = row[col]
+                            break
+                    
+                    # Display holder info
                     st.markdown(f"**{holder}**")
-                    st.caption(f"{humanize_number(shares)} shares ({pct_held*100:.2f}%)")
+                    if pct_held is not None and pct_held > 0:
+                        pct_display = pct_held if pct_held > 1 else pct_held * 100
+                        st.caption(f"{humanize_number(shares)} shares ({pct_display:.2f}%)")
+                    else:
+                        st.caption(f"{humanize_number(shares)} shares")
             else:
                 st.info("No mutual fund holdings data available")
-        except:
-            st.info("No mutual fund holdings data available")
+        except Exception as e:
+            st.info(f"Mutual fund holdings error: {str(e)}")
     
     # Financial Statements
     if show_financials:
