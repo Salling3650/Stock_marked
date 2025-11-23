@@ -1,8 +1,4 @@
-"""
-Stock Analysis Dashboard
-A comprehensive financial analysis tool built with Streamlit
-"""
-
+"""Stock Analysis Dashboard - Comprehensive financial analysis tool"""
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -14,531 +10,359 @@ from datetime import datetime, timedelta
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import json
 import warnings
+import base64
+import matplotlib.pyplot as plt
+from io import BytesIO
 warnings.filterwarnings('ignore')
 
-# Page configuration
-st.set_page_config(
-    page_title="Stock Analysis Dashboard",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .metric-card {
-        background: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    .positive { color: #10b981; }
-    .negative { color: #ef4444; }
-    .neutral { color: #6b7280; }
-    .section-header {
-        font-size: 24px;
-        font-weight: 700;
-        margin-top: 24px;
-        margin-bottom: 16px;
-        color: #111827;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Helper Functions
-def make_cnn_api_request(url, max_retries=3, backoff_factor=1.0, timeout=10):
-    """
-    Make an API request to CNN Business with retry logic.
-    """
-    session = requests.Session()
-    retry = Retry(
-        total=max_retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=[500, 502, 503, 504]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    
-    try:
-        response = session.get(url, timeout=timeout)
-        return response
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
-        return None
+st.set_page_config(page_title="Stock Analysis Dashboard", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+st.markdown("""<style>.metric-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}.positive{color:#10b981}.negative{color:#ef4444}.neutral{color:#6b7280}.section-header{font-size:24px;font-weight:700;margin-top:24px;margin-bottom:16px;color:#111827}</style>""", unsafe_allow_html=True)
 
 def fetch_stock_data(ticker, period='2y'):
-    """Fetch stock data (no caching for ticker object)"""
     try:
         stock = yf.Ticker(ticker)
-        data = stock.history(period=period)
-        return data, stock
+        return stock.history(period=period), stock
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Error: {e}")
         return None, None
 
-@st.cache_data(ttl=300)
-def get_cached_history(ticker, period='2y'):
-    """Fetch only price history with caching"""
-    try:
-        stock = yf.Ticker(ticker)
-        data = stock.history(period=period)
-        return data
-    except Exception as e:
-        return None
-
 def calculate_technical_indicators(data):
-    """Calculate technical indicators"""
     df = data.copy()
-    
-    # Moving Averages
-    df['MA_20'] = df['Close'].rolling(window=20).mean()
-    df['MA_50'] = df['Close'].rolling(window=50).mean()
-    
-    # RSI
+    df['MA_20'], df['MA_50'] = df['Close'].rolling(20).mean(), df['Close'].rolling(50).mean()
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # MACD
-    exp12 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = exp12 - exp26
-    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    gain, loss = (delta.where(delta > 0, 0)).rolling(14).mean(), (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + gain / loss))
+    exp12, exp26 = df['Close'].ewm(span=12, adjust=False).mean(), df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'], df['Signal'] = exp12 - exp26, (exp12 - exp26).ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['Signal']
-    
-    # Bollinger Bands
-    df['BB_Middle'] = df['Close'].rolling(window=20).mean()
-    bb_std = df['Close'].rolling(window=20).std()
-    df['BB_Upper'] = df['BB_Middle'] + (bb_std * 2)
-    df['BB_Lower'] = df['BB_Middle'] - (bb_std * 2)
-    
-    # Stochastic Oscillator
-    low_14 = df['Low'].rolling(window=14).min()
-    high_14 = df['High'].rolling(window=14).max()
+    df['BB_Middle'] = df['Close'].rolling(20).mean()
+    bb_std = df['Close'].rolling(20).std()
+    df['BB_Upper'], df['BB_Lower'] = df['BB_Middle'] + (bb_std * 2), df['BB_Middle'] - (bb_std * 2)
+    low_14, high_14 = df['Low'].rolling(14).min(), df['High'].rolling(14).max()
     df['%K'] = 100 * ((df['Close'] - low_14) / (high_14 - low_14))
-    df['%D'] = df['%K'].rolling(window=3).mean()
-    
+    df['%D'] = df['%K'].rolling(3).mean()
     return df
 
 def calculate_risk_metrics(data):
-    """Calculate risk metrics"""
     returns = data['Close'].pct_change().dropna()
-    
-    if len(returns) < 30:
-        return {}
-    
-    total_return = (data['Close'].iloc[-1] / data['Close'].iloc[0]) - 1
-    years = len(data) / 252
-    
+    if len(returns) < 30: return {}
+    total_return, years = (data['Close'].iloc[-1] / data['Close'].iloc[0]) - 1, len(data) / 252
     annualized_return = ((1 + total_return) ** (1 / years) - 1) * 100 if years > 0 else None
     annualized_volatility = returns.std() * np.sqrt(252) * 100
-    sharpe_ratio = annualized_return / annualized_volatility if annualized_volatility > 0 else None
-    
     cumulative = (1 + returns).cumprod()
-    drawdown = (cumulative - cumulative.expanding().max()) / cumulative.expanding().max()
-    max_drawdown = drawdown.min() * 100
-    
-    downside_returns = returns[returns < 0]
-    downside_std = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else 0
-    sortino_ratio = annualized_return / (downside_std * 100) if downside_std > 0 else None
-    
-    calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown < 0 else None
-    var_95 = abs(returns.quantile(0.05)) * 100
-    
+    max_drawdown = ((cumulative - cumulative.expanding().max()) / cumulative.expanding().max()).min() * 100
+    downside_std = returns[returns < 0].std() * np.sqrt(252) if len(returns[returns < 0]) > 0 else 0
     return {
         'Annualized Return': annualized_return,
         'Annualized Volatility': annualized_volatility,
-        'Sharpe Ratio': sharpe_ratio,
-        'Sortino Ratio': sortino_ratio,
-        'Calmar Ratio': calmar_ratio,
+        'Sharpe Ratio': annualized_return / annualized_volatility if annualized_volatility > 0 else None,
+        'Sortino Ratio': annualized_return / (downside_std * 100) if downside_std > 0 else None,
+        'Calmar Ratio': annualized_return / abs(max_drawdown) if max_drawdown < 0 else None,
         'Max Drawdown': max_drawdown,
-        'VaR (95%)': var_95
+        'VaR (95%)': abs(returns.quantile(0.05)) * 100
     }
 
 def calculate_altman_z_score(ticker_obj, market_cap):
-    """Calculate Altman Z-Score"""
     try:
-        bs = ticker_obj.balance_sheet
-        inc = ticker_obj.income_stmt
-        
-        if bs.empty or inc.empty:
-            return None, None
-        
-        latest_bs = bs.iloc[:, 0]
-        latest_inc = inc.iloc[:, 0]
-        
+        bs, inc = ticker_obj.balance_sheet, ticker_obj.income_stmt
+        if bs.empty or inc.empty: return None, None
+        latest_bs, latest_inc = bs.iloc[:, 0], inc.iloc[:, 0]
         current_assets = latest_bs.get('Current Assets', latest_bs.get('Total Current Assets'))
         current_liabilities = latest_bs.get('Current Liabilities', latest_bs.get('Total Current Liabilities'))
-        total_assets = latest_bs.get('Total Assets')
-        total_liabilities = latest_bs.get('Total Liabilities Net Minority Interest', latest_bs.get('Total Liabilities'))
-        retained_earnings = latest_bs.get('Retained Earnings')
-        ebit = latest_inc.get('EBIT', latest_inc.get('Operating Income'))
-        revenue = latest_inc.get('Total Revenue')
-        
-        if all(x is not None for x in [current_assets, current_liabilities, total_assets, 
-                                        total_liabilities, retained_earnings, ebit, revenue, market_cap]):
-            working_capital = current_assets - current_liabilities
-            X1 = working_capital / total_assets
-            X2 = retained_earnings / total_assets
-            X3 = ebit / total_assets
-            X4 = market_cap / total_liabilities
-            X5 = revenue / total_assets
-            
-            z_score = 1.2 * X1 + 1.4 * X2 + 3.3 * X3 + 0.6 * X4 + X5
-            
-            if z_score > 2.99:
-                interpretation = "Safe Zone"
-            elif z_score >= 1.81:
-                interpretation = "Grey Zone"
-            else:
-                interpretation = "Distress Zone"
-            
-            return z_score, interpretation
-    except:
-        pass
-    
+        total_assets, total_liabilities = latest_bs.get('Total Assets'), latest_bs.get('Total Liabilities Net Minority Interest', latest_bs.get('Total Liabilities'))
+        retained_earnings, ebit, revenue = latest_bs.get('Retained Earnings'), latest_inc.get('EBIT', latest_inc.get('Operating Income')), latest_inc.get('Total Revenue')
+        if all(x is not None for x in [current_assets, current_liabilities, total_assets, total_liabilities, retained_earnings, ebit, revenue, market_cap]):
+            wc = current_assets - current_liabilities
+            z = 1.2*(wc/total_assets) + 1.4*(retained_earnings/total_assets) + 3.3*(ebit/total_assets) + 0.6*(market_cap/total_liabilities) + (revenue/total_assets)
+            return z, "Safe Zone" if z > 2.99 else "Grey Zone" if z >= 1.81 else "Distress Zone"
+    except: pass
     return None, None
 
 def calculate_capm(stock_ticker, selected_stock, weeks=150):
-    """Calculate CAPM metrics"""
     try:
-        # Fetch data
-        stock_data = stock_ticker.history(period='max')
-        market_ticker = yf.Ticker("^GSPC")
-        market_data = market_ticker.history(period='max')
-        
-        # Get risk-free rate
-        treasury = yf.Ticker("^TNX")
-        treasury_data = treasury.history(period="5d")
+        stock_data, market_data = stock_ticker.history(period='max'), yf.Ticker("^GSPC").history(period='max')
+        treasury_data = yf.Ticker("^TNX").history(period="5d")
         risk_free_rate = treasury_data['Close'].iloc[-1] / 100 if not treasury_data.empty else 0.04
-        
-        # Ensure datetime index
-        if not isinstance(stock_data.index, pd.DatetimeIndex):
-            stock_data.index = pd.to_datetime(stock_data.index)
-        if not isinstance(market_data.index, pd.DatetimeIndex):
-            market_data.index = pd.to_datetime(market_data.index)
-        
-        # Merge and resample to weekly
-        merged = pd.DataFrame({
-            'Stock': stock_data['Close'],
-            'Market': market_data['Close']
-        }).dropna()
-        
-        # Ensure merged has datetime index
-        if not isinstance(merged.index, pd.DatetimeIndex):
-            merged.index = pd.to_datetime(merged.index)
-        
+        for df in [stock_data, market_data]:
+            if 'DatetimeIndex' not in str(type(df.index)): df.index = pd.to_datetime(df.index)
+        merged = pd.DataFrame({'Stock': stock_data['Close'], 'Market': market_data['Close']}).dropna()
+        if 'DatetimeIndex' not in str(type(merged.index)): merged.index = pd.to_datetime(merged.index)
         weekly = merged.resample('W-FRI').last().dropna().tail(weeks)
-        
-        # Calculate returns
-        stock_returns = weekly['Stock'].pct_change().dropna()
-        market_returns = weekly['Market'].pct_change().dropna()
-        
-        aligned = pd.DataFrame({
-            'Stock': stock_returns,
-            'Market': market_returns
-        }).dropna()
-        
-        # Calculate beta using regression
-        slope, intercept, r_value, p_value, std_err = stats.linregress(
-            aligned['Market'], aligned['Stock']
-        )
+        aligned = pd.DataFrame({'Stock': weekly['Stock'].pct_change(), 'Market': weekly['Market'].pct_change()}).dropna()
+        slope, _, r_value, _, _ = stats.linregress(aligned['Market'], aligned['Stock'])
         beta = slope
-        
-        # Calculate metrics
-        market_return_annual = aligned['Market'].mean() * 52
-        stock_return_annual = aligned['Stock'].mean() * 52
+        market_return_annual, stock_return_annual = aligned['Market'].mean() * 52, aligned['Stock'].mean() * 52
         expected_return_capm = risk_free_rate + beta * (market_return_annual - risk_free_rate)
-        alpha = stock_return_annual - expected_return_capm
-        r_squared = r_value ** 2
-        
-        # Nonlinear beta (market regime analysis)
-        up_market = aligned[aligned['Market'] > 0]
-        down_market = aligned[aligned['Market'] <= 0]
-        
-        beta_up = (up_market['Stock'].cov(up_market['Market']) / up_market['Market'].var() 
-                   if len(up_market) > 5 and up_market['Market'].var() != 0 else beta)
-        beta_down = (down_market['Stock'].cov(down_market['Market']) / down_market['Market'].var() 
-                     if len(down_market) > 5 and down_market['Market'].var() != 0 else beta)
-        beta_asymmetry = abs(beta_up - beta_down)
-        
-        return {
-            'beta': beta,
-            'alpha': alpha,
-            'expected_return': expected_return_capm,
-            'actual_return': stock_return_annual,
-            'risk_free_rate': risk_free_rate,
-            'market_return': market_return_annual,
-            'r_squared': r_squared,
-            'aligned_data': aligned,
-            'beta_up': beta_up,
-            'beta_down': beta_down,
-            'beta_asymmetry': beta_asymmetry,
-            'up_market': up_market,
-            'down_market': down_market
-        }
+        up_market, down_market = aligned[aligned['Market'] > 0], aligned[aligned['Market'] <= 0]
+        beta_up = up_market['Stock'].cov(up_market['Market']) / up_market['Market'].var() if len(up_market) > 5 and up_market['Market'].var() != 0 else beta
+        beta_down = down_market['Stock'].cov(down_market['Market']) / down_market['Market'].var() if len(down_market) > 5 and down_market['Market'].var() != 0 else beta
+        return {'beta': beta, 'alpha': stock_return_annual - expected_return_capm, 'expected_return': expected_return_capm,
+                'actual_return': stock_return_annual, 'risk_free_rate': risk_free_rate, 'market_return': market_return_annual,
+                'r_squared': r_value ** 2, 'aligned_data': aligned, 'beta_up': beta_up, 'beta_down': beta_down,
+                'beta_asymmetry': abs(beta_up - beta_down), 'up_market': up_market, 'down_market': down_market}
     except Exception as e:
-        st.error(f"CAPM calculation error: {e}")
+        st.error(f"CAPM error: {e}")
         return None
 
 def humanize_number(num):
-    """Convert number to human-readable format"""
-    if num is None:
-        return "N/A"
-    
+    if num is None: return "N/A"
     abs_num = abs(num)
-    if abs_num >= 1e12:
-        return f"${num/1e12:.2f}T"
-    elif abs_num >= 1e9:
-        return f"${num/1e9:.2f}B"
-    elif abs_num >= 1e6:
-        return f"${num/1e6:.2f}M"
-    elif abs_num >= 1e3:
-        return f"${num/1e3:.2f}K"
-    else:
-        return f"${num:.2f}"
+    if abs_num >= 1e12: return f"${num/1e12:.2f}T"
+    elif abs_num >= 1e9: return f"${num/1e9:.2f}B"
+    elif abs_num >= 1e6: return f"${num/1e6:.2f}M"
+    elif abs_num >= 1e3: return f"${num/1e3:.2f}K"
+    else: return f"${num:.2f}"
 
 @st.cache_data(ttl=3600)
 def get_fear_greed_index():
-    """Fetch CNN Fear & Greed Index"""
     try:
-        session = requests.Session()
-        retries = Retry(total=2, backoff_factor=0.8, status_forcelist=[429, 500, 502, 503, 504])
-        session.mount("https://", HTTPAdapter(max_retries=retries))
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json",
-            "Referer": "https://www.cnn.com/",
-        }
-        
-        resp = session.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata", 
-                          headers=headers, timeout=8)
-        
+        resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            fg_data = data.get("fear_and_greed", {})
-            score = fg_data.get('score')
-            rating = fg_data.get('rating')
-            
-            # Historical data
-            historical = data.get("fear_and_greed_historical", {}).get("data", [])
-            hist_df = pd.DataFrame([
-                {"timestamp": pd.to_datetime(item.get("x"), unit='ms', utc=True), 
-                 "score": item.get("y")}
-                for item in historical if item.get("x") and item.get("y") is not None
-            ])
-            
-            return {'score': score, 'rating': rating, 'historical': hist_df}
-    except:
-        pass
-    
+            if data.get('metadata', {}).get('error') is None and data.get('data'):
+                item = data['data'][0]
+                score = int(item['value'])
+                rating = item['value_classification'].lower()
+                # Get historical
+                hist_resp = requests.get("https://api.alternative.me/fng/?limit=0", timeout=10)
+                hist_df = None
+                if hist_resp.status_code == 200:
+                    hist_data = hist_resp.json()
+                    if hist_data.get('data'):
+                        hist_df = pd.DataFrame([{"timestamp": pd.to_datetime(int(d['timestamp']), unit='s'), "score": int(d['value'])}
+                                               for d in hist_data['data'] if d.get('value')])
+                return {'score': score, 'rating': rating, 'historical': hist_df}
+    except: pass
     return None
 
-# Main App
+def ch(v,c,cl='#3b82f6'):
+    if not v or all(x is None for x in v):return None
+    v=[None]*(4-len(v[-4:]))+v[-4:];f,a=plt.subplots(figsize=(1.2,.7));f.patch.set_alpha(0);a.set_facecolor('none');b=a.bar(range(4),[x or 0 for x in v],color=cl,width=.7)
+    for x in b:x.set_capstyle('round');x.set_joinstyle('round')
+    a.axis('off');plt.tight_layout(pad=0);u=BytesIO();plt.savefig(u,format='png',dpi=50,bbox_inches='tight',transparent=True);plt.close(f);u.seek(0);return f'data:image/png;base64,{base64.b64encode(u.read()).decode()}'
+
+def cd(n,v,c=None,h=None,s=None):
+    if c is not None:
+        color = "#10b981" if c > 0 else "#ef4444" if c < 0 else "#6b7280"
+        symbol = "▲" if c > 0 else "▼" if c < 0 else "●"
+        ch_div = f'<div style="color: {color}; font-size: 12px; margin-top: 4px;">{symbol} {abs(c):.1f}%</div>'
+    else:
+        ch_div = ''
+    sb = f'<div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">{s}</div>' if s else ''
+    st = 'background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'
+    ct = f'<div style="color: #6b7280; font-size: 13px; font-weight: 500; margin-bottom: 8px;">{n}</div><div style="color: #111827; font-size: 24px; font-weight: 700;">{v}</div>{sb}{ch_div}'
+    if h:
+        return f'<div style="{st} display: flex; justify-content: space-between; align-items: center; gap: 12px;"><div style="flex: 1;">{ct}</div><div style="flex-shrink: 0;"><img src="{h}" style="width: 70px; height: 40px;"></div></div>'
+    else:
+        return f'<div style="{st}">{ct}</div>'
+
+def pc(n,c):
+    if c is None:
+        return cd(n,'N/A')
+    cl = '#10b981' if c > 0 else '#ef4444' if c < 0 else '#6b7280'
+    sy = '▲' if c > 0 else '▼' if c < 0 else '●'
+    if any(k in n for k in ['%', 'Return', 'Volatility', 'Drawdown', 'VaR']):
+        val = f'{sy} {abs(c):.1f}%'
+    else:
+        val = f'{sy} {abs(c):.2f}'
+    return f'<div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"><div style="color: #6b7280; font-size: 13px; font-weight: 500; margin-bottom: 8px;">{n}</div><div style="color: {cl}; font-size: 24px; font-weight: 700;">{val}</div></div>'
+
+def safe_float(x):
+    try:
+        return float(x)
+    except:
+        return None
+
+def get_current_price_and_date(rh, data, info):
+    if hasattr(rh, 'columns') and not rh.empty:
+        cp = rh['Close'].iloc[-1]
+        ld = rh.index[-1].strftime('%Y-%m-%d')
+    elif hasattr(data, 'columns') and not data.empty:
+        cp = data['Close'].iloc[-1]
+        ld = data.index[-1].strftime('%Y-%m-%d')
+    else:
+        cp = info.get('currentPrice') or info.get('regularMarketPrice')
+        ld = datetime.now().strftime('%Y-%m-%d')
+    return cp, ld
+
 def main():
     st.title("📈 Stock Analysis Dashboard")
     st.markdown("*Comprehensive financial analysis and visualization tool*")
     
-    # Sidebar
     with st.sidebar:
         st.header("Settings")
-        
-        # Stock selector
-        ticker_input = st.text_input(
-            "Enter Stock Ticker",
-            value="AAPL",
-            help="Enter a valid stock ticker symbol (e.g., AAPL, MSFT, GOOGL)"
-        ).upper()
-        
-        # Time period selector
-        period = st.selectbox(
-            "Select Time Period",
-            options=['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max'],
-            index=4,
-            help="Historical data period to analyze"
-        )
-        
-        # Analysis options
+        ticker_input = st.text_input("Enter Stock Ticker", value="AAPL", help="e.g., AAPL, MSFT, GOOGL").upper()
+        period = st.selectbox("Select Time Period", options=['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max'], index=4)
         st.subheader("Analysis Options")
         show_capm = st.checkbox("Show CAPM & Beta Analysis", value=False)
         show_financials = st.checkbox("Show Financial Statements", value=False)
         show_holdings = st.checkbox("Show Institutional Holdings", value=False)
         show_news = st.checkbox("Show News & Sentiment", value=False)
-        
-        # Fetch data button
         fetch_button = st.button("🔄 Fetch Data", type="primary", use_container_width=True)
     
-    # Initialize session state
     if 'ticker' not in st.session_state or fetch_button:
-        st.session_state.ticker = ticker_input
-        st.session_state.period = period
-        st.session_state.data = None
-        st.session_state.stock_obj = None
+        st.session_state.ticker, st.session_state.period = ticker_input, period
+        st.session_state.data, st.session_state.stock_obj = None, None
     
-    # Fetch data
     if st.session_state.data is None or fetch_button:
         with st.spinner(f"Fetching data for {ticker_input}..."):
             data, stock_obj = fetch_stock_data(ticker_input, period)
-            
             if data is not None and not data.empty:
                 data = calculate_technical_indicators(data)
-                st.session_state.data = data
-                st.session_state.stock_obj = stock_obj
+                st.session_state.data, st.session_state.stock_obj = data, stock_obj
                 st.success(f"✅ Successfully loaded data for {ticker_input}")
             else:
-                st.error(f"❌ Could not fetch data for {ticker_input}. Please check the ticker symbol.")
+                st.error(f"❌ Could not fetch data for {ticker_input}")
                 return
     
-    data = st.session_state.data
-    stock_obj = st.session_state.stock_obj
-    
+    data, stock_obj = st.session_state.data, st.session_state.stock_obj
     if data is None or data.empty:
-        st.info("👈 Enter a ticker symbol and click 'Fetch Data' to begin")
+        st.info("👈 Enter a ticker and click 'Fetch Data'")
         return
     
-    # Get stock info
     info = stock_obj.info if hasattr(stock_obj, 'info') else {}
-    
-    # Header with company info
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        st.markdown(f"### {info.get('longName', ticker_input)} ({ticker_input})")
-        st.markdown(f"*{info.get('sector', 'N/A')} • {info.get('industry', 'N/A')}*")
-    
-    with col2:
-        current_price = data['Close'].iloc[-1]
-        prev_price = data['Close'].iloc[-2] if len(data) >= 2 else current_price
-        price_change = ((current_price - prev_price) / prev_price * 100) if prev_price else 0
-        
-        st.metric(
-            "Current Price",
-            f"${current_price:.2f}",
-            f"{price_change:+.2f}%"
-        )
-    
-    with col3:
-        market_cap = info.get('marketCap')
-        if market_cap:
-            st.metric("Market Cap", humanize_number(market_cap))
-    
-    # Key Metrics Row
-    st.markdown("---")
-    cols = st.columns(6)
-    
-    metrics = [
-        ("P/E Ratio", info.get('trailingPE'), ".2f"),
-        ("EPS", info.get('trailingEps'), ".2f"),
-        ("Beta", info.get('beta'), ".2f"),
-        ("52W High", info.get('fiftyTwoWeekHigh'), ".2f"),
-        ("52W Low", info.get('fiftyTwoWeekLow'), ".2f"),
-        ("Volume", info.get('volume'), ",")
-    ]
-    
-    for col, (label, value, fmt) in zip(cols, metrics):
-        if value is not None:
-            if fmt == ",":
-                col.metric(label, f"{value:,}")
+    # Display key metrics with visual cards and mini charts
+    selected_stock = ticker_input
+    data = st.session_state.data
+    stock_obj = st.session_state.stock_obj
+
+    if not selected_stock:
+        st.error("No stock selected.")
+    else:
+        t = stock_obj
+        rh = t.history(period='5d')
+        if data is None or (data is not None and data.empty):
+            data = t.history(period='2y')
+            if hasattr(data, 'columns') and not data.empty:
+                data = calculate_technical_indicators(data)
+        i = getattr(t, 'info', {}) or {}
+        qe = getattr(t, 'earnings_dates', None)
+        qeps = qe['EPS'].dropna().tail(4).tolist() if qe is not None and not qe.empty and 'EPS' in qe.columns else []
+        qv = {}
+        if hasattr(data, 'columns') and not data.empty and 'DatetimeIndex' in str(type(data.index)):
+            qd = data.resample('Q').last()
+            qd = qd.iloc[-5:-1] if len(qd) >= 5 else qd
+            qv = {c: qd[c].tolist() for c in ['Close', 'RSI', 'Volume'] if c in qd.columns}
+        hp, hr, hv = qv.get('Close', []), qv.get('RSI', []), qv.get('Volume', [])
+        cp, ld = get_current_price_and_date(rh, data, i)
+        pc1 = None
+        if hasattr(rh, 'columns') and len(rh) >= 2:
+            p0, p1 = safe_float(rh['Close'].iloc[-2]), safe_float(rh['Close'].iloc[-1])
+            pc1 = (p1 - p0) / p0 * 100 if p0 else None
+        dy = i.get('dividendYield')
+        dyp = (dy * 100 if dy and dy < 0.5 else dy if dy and dy < 20 else None) if dy else None
+        m = {k: i.get(v) for k, v in [('market_cap', 'marketCap'), ('pe_ratio', 'trailingPE'), ('eps', 'trailingEps'), ('pb_ratio', 'priceToBook'), ('week_52_high', 'fiftyTwoWeekHigh'), ('week_52_low', 'fiftyTwoWeekLow'), ('volume', 'volume'), ('beta', 'beta'), ('ebitda', 'ebitda'), ('book_value', 'bookValue'), ('shares_outstanding', 'sharesOutstanding'), ('profit_margin', 'profitMargins'), ('operating_margin', 'operatingMargins'), ('return_on_assets', 'returnOnAssets'), ('return_on_equity', 'returnOnEquity')]}
+        m.update({'dividend_yield': dyp, 'company_name': i.get('longName') or i.get('shortName') or selected_stock, 'sector': i.get('sector', 'N/A'), 'industry': i.get('industry', 'N/A')})
+        tech = {}
+        if hasattr(data, 'columns'):
+            for ind, col in [('rsi', 'RSI'), ('macd', 'MACD'), ('stochastic_k', '%K'), ('volume', 'Volume')]:
+                if col in data.columns and not (s := data[col].dropna()).empty:
+                    tech[ind] = safe_float(s.iloc[-1])
+            if all(c in data.columns for c in ['Close', 'Upper_Band', 'Lower_Band']):
+                cv, u, l = safe_float(data['Close'].iloc[-1]), safe_float(data['Upper_Band'].iloc[-1]), safe_float(data['Lower_Band'].iloc[-1])
+                tech['bollinger_b'] = (cv - l) / (u - l) if cv and u and l and u != l else None
+        pf = {}
+        if hasattr(data, 'columns') and not data.empty and 'Close' in data.columns:
+            cl = data['Close']
+            for n, d in [('30d', 30), ('90d', 90), ('6m', 126), ('1y', 252)]:
+                pf[n] = ((cl.iloc[-1] - cl.iloc[-d]) / cl.iloc[-d]) * 100 if len(data) >= d else ((cl.iloc[-1] - cl.iloc[0]) / cl.iloc[0]) * 100 if n == '1y' and len(data) > 126 else None
+        rk = {k: None for k in ['sharpe_ratio', 'sortino_ratio', 'calmar_ratio', 'annualized_volatility', 'annualized_return', 'max_drawdown', 'var_95']}
+        if hasattr(data, 'columns') and not data.empty and 'Close' in data.columns and len(data) >= 30:
+            rt = data['Close'].pct_change().dropna()
+            if not rt.empty:
+                tr = (data['Close'].iloc[-1] / data['Close'].iloc[0]) - 1
+                yr = len(data) / 252
+                rk['annualized_return'] = ((1 + tr) ** (1 / yr) - 1) * 100 if yr > 0 else None
+                rk['annualized_volatility'] = rt.std() * np.sqrt(252) * 100
+                rk['sharpe_ratio'] = (rk['annualized_return'] or 0) / rk['annualized_volatility'] if rk['annualized_volatility'] and rk['annualized_volatility'] > 0 else None
+                cm = (1 + rt).cumprod()
+                dd = (cm - cm.expanding().max()) / cm.expanding().max()
+                rk['max_drawdown'] = dd.min() * 100
+                dr = rt[rt < 0]
+                rk['sortino_ratio'] = (rk['annualized_return'] or 0) / ((ds := dr.std() * np.sqrt(252)) * 100) if len(dr) > 0 and (ds := dr.std() * np.sqrt(252)) > 0 else None
+                rk['calmar_ratio'] = rk['annualized_return'] / abs(rk['max_drawdown']) if rk['max_drawdown'] and rk['max_drawdown'] < 0 and rk['annualized_return'] else None
+                rk['var_95'] = abs(rt.quantile(0.05)) * 100
+        chg = {}
+        if m['market_cap'] and hp and cp and cp != 0:
+            m1y = (data['Close'].iloc[-250] if hasattr(data, 'columns') and not data.empty and len(data) >= 250 else hp[0]) * (m['market_cap'] / cp)
+            chg['market_cap'] = ((m['market_cap'] - m1y) / m1y) * 100 if m1y and m1y != 0 else None
+        if m['eps'] and qeps and qeps[0] != 0:
+            chg['eps'] = ((m['eps'] - qeps[0]) / qeps[0]) * 100
+        cht = {}
+        if hp and cp:
+            cht['price'] = ch(hp, cp)
+        if m['market_cap'] and hp and cp and cp != 0:
+            cht['market_cap'] = ch([p * (m['market_cap'] / cp) for p in hp], m['market_cap'])
+        if m['pe_ratio'] and qeps and (qpe := [cp / e for e in qeps if e and e != 0]):
+            cht['pe'] = ch(qpe, m['pe_ratio'])
+        if m['eps'] and qeps:
+            cht['eps'] = ch(qeps, m['eps'])
+        if m['pb_ratio'] and hp and m['book_value'] and m['book_value'] != 0:
+            cht['pb'] = ch([p / m['book_value'] for p in hp], m['pb_ratio'])
+        if tech.get('rsi') and hr:
+            cht['rsi'] = ch(hr, tech['rsi'])
+        if tech.get('volume') and hv:
+            cht['volume'] = ch(hv, tech['volume'])
+        h = [f'''<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px;"><h2 style="color: #111827; margin-bottom: 8px;">{m['company_name']} ({selected_stock})</h2><div style="color: #6b7280; font-size: 14px; margin-bottom: 24px;">{m['sector']} • {m['industry']}</div><div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">''']
+        for n, v, c, ch_img, s in [('Current Price', f'${cp:.2f}' if cp else 'N/A', pc1, cht.get('price'), None), ('Market Cap', f'${humanize_number(m["market_cap"])}' if m['market_cap'] else 'N/A', chg.get('market_cap'), cht.get('market_cap'), None), ('Shares Outstanding', humanize_number(m['shares_outstanding']) if m['shares_outstanding'] else 'N/A', None, None, None), ('P/E Ratio', f'{m["pe_ratio"]:.2f}' if m['pe_ratio'] else 'N/A', None, cht.get('pe'), None), ('EPS', f'${m["eps"]:.2f}' if m['eps'] else 'N/A', chg.get('eps'), cht.get('eps'), None), ('EBITDA', f'${humanize_number(m["ebitda"])}' if m['ebitda'] else 'N/A', None, None, None), ('Dividend Yield', f'{m["dividend_yield"]:.2f}%' if m['dividend_yield'] else 'N/A', None, None, None), ('P/B Ratio', f'{m["pb_ratio"]:.2f}' if m['pb_ratio'] else 'N/A', None, cht.get('pb'), None), ('52W High', f'${m["week_52_high"]:.2f}' if m['week_52_high'] else 'N/A', None, None, None), ('52W Low', f'${m["week_52_low"]:.2f}' if m['week_52_low'] else 'N/A', None, None, None), ('Volume', humanize_number(m['volume'] or tech.get('volume')) if (m['volume'] or tech.get('volume')) else 'N/A', None, cht.get('volume'), None), ('RSI', f'{tech["rsi"]:.1f}' if tech.get('rsi') else 'N/A', None, cht.get('rsi'), None), ('MACD', f'{tech["macd"]:.3f}' if tech.get('macd') is not None else 'N/A', None, None, None), ('Bollinger %B', f'{tech["bollinger_b"]:.2f}' if tech.get('bollinger_b') is not None else 'N/A', None, None, None), ('Stochastic %K', f'{tech["stochastic_k"]:.1f}' if tech.get('stochastic_k') is not None else 'N/A', None, None, None), ('Beta', f'{m["beta"]:.2f}' if m['beta'] else 'N/A', None, None, '(vs S&P 500)')]:
+            h.append(cd(n, v, c, ch_img, s))
+        h.append('</div><h3 style="color: #111827; margin-top: 24px; margin-bottom: 16px;">Profitability Metrics</h3><div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">')
+        for n, k in [('Profit Margin', 'profit_margin'), ('Operating Margin', 'operating_margin'), ('Return on Assets', 'return_on_assets'), ('Return on Equity', 'return_on_equity')]:
+            val = m.get(k)
+            if val is not None:
+                val_pct = val * 100
+                h.append(cd(n, f'{val_pct:.2f}%'))
             else:
-                col.metric(label, f"{value:{fmt}}")
-        else:
-            col.metric(label, "N/A")
-    
-    # Interactive Price Chart
+                h.append(cd(n, 'N/A'))
+        h.append('</div><h3 style="color: #111827; margin-top: 24px; margin-bottom: 16px;">Risk Metrics</h3><div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">')
+        zs = None
+        zi = None
+        try:
+            bs = getattr(t, 'balance_sheet', None)
+            inc = getattr(t, 'income_stmt', None)
+            lb = bs.iloc[:, 0] if bs is not None and not bs.empty else {}
+            li = inc.iloc[:, 0] if inc is not None and not inc.empty else {}
+            ca = lb.get('Current Assets', lb.get('Total Current Assets'))
+            cl = lb.get('Current Liabilities', lb.get('Total Current Liabilities'))
+            ta = lb.get('Total Assets')
+            tl = lb.get('Total Liabilities Net Minority Interest', lb.get('Total Liabilities'))
+            re = lb.get('Retained Earnings')
+            eb = li.get('EBIT', li.get('Operating Income'))
+            rv = li.get('Total Revenue')
+            zs = 1.2 * (ca - cl) / ta + 1.4 * re / ta + 3.3 * eb / ta + 0.6 * m['market_cap'] / tl + rv / ta if all(x and ta and tl for x in [ca, cl, re, eb, rv, m['market_cap']]) else None
+            zi = 'Safe Zone' if zs and zs > 2.99 else 'Grey Zone' if zs and zs >= 1.81 else 'Distress Zone' if zs else None
+        except:
+            pass
+        for n, k in [('Sharpe Ratio', 'sharpe_ratio'), ('Sortino Ratio', 'sortino_ratio'), ('Calmar Ratio', 'calmar_ratio'), ('Annualized Volatility', 'annualized_volatility'), ('Annualized Return', 'annualized_return'), ('Max Drawdown', 'max_drawdown'), ('VaR (95%)', 'var_95')]:
+            h.append(pc(n, rk.get(k)))
+        h.append(cd('Altman Z-Score', f'{zs:.2f}' if zs else 'N/A', None, None, zi))
+        h.append('</div><h3 style="color: #111827; margin-top: 24px; margin-bottom: 16px;">Performance</h3><div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">')
+        for n, k in [('30-Day Return', '30d'), ('90-Day Return', '90d'), ('6-Month Return', '6m'), ('1-Year Return', '1y')]:
+            h.append(pc(n, pf.get(k)))
+        h.append('</div></div>')
+        st.markdown(''.join(h), unsafe_allow_html=True)
+
     st.markdown("---")
     st.markdown("## 📊 Stock Price & Technical Dashboard")
-    
-    # Main price chart with volume and RSI
-    fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.5, 0.25, 0.25],
-        subplot_titles=('Price, Moving Averages & Bollinger Bands', 'Volume', 'RSI')
-    )
-    
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=data.index,
-        open=data['Open'],
-        high=data['High'],
-        low=data['Low'],
-        close=data['Close'],
-        name=ticker_input,
-        increasing_line_color='#26a69a',
-        decreasing_line_color='#ef5350'
-    ), row=1, col=1)
-    
-    # Moving Averages
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['MA_20'],
-        mode='lines', name='20-day MA',
-        line=dict(color='#2962FF', width=2)
-    ), row=1, col=1)
-    
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['MA_50'],
-        mode='lines', name='50-day MA',
-        line=dict(color='#FF6D00', width=2)
-    ), row=1, col=1)
-    
-    # Bollinger Bands
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['BB_Upper'],
-        mode='lines', name='BB Upper',
-        line=dict(color='gray', width=1, dash='dash'),
-        opacity=0.5
-    ), row=1, col=1)
-    
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['BB_Lower'],
-        mode='lines', name='BB Lower',
-        line=dict(color='gray', width=1, dash='dash'),
-        fill='tonexty', fillcolor='rgba(128, 128, 128, 0.2)',
-        opacity=0.5
-    ), row=1, col=1)
-    
-    # Volume
-    colors = ['#26a69a' if data['Close'].iloc[i] >= data['Open'].iloc[i] else '#ef5350' 
-              for i in range(len(data))]
-    
-    fig.add_trace(go.Bar(
-        x=data.index, y=data['Volume']/1e6,
-        name='Volume (M)', marker_color=colors,
-        showlegend=False
-    ), row=2, col=1)
-    
-    # RSI
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['RSI'],
-        mode='lines', name='RSI',
-        line=dict(color='purple', width=2)
-    ), row=3, col=1)
-    
-    # RSI levels
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.5, 0.25, 0.25],
+                       subplot_titles=('Price, MAs & Bollinger Bands', 'Volume', 'RSI'))
+    fig.add_trace(go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'],
+                                 name=ticker_input, increasing_line_color='#26a69a', decreasing_line_color='#ef5350'), row=1, col=1)
+    for ma, color in [('MA_20', '#2962FF'), ('MA_50', '#FF6D00')]:
+        fig.add_trace(go.Scatter(x=data.index, y=data[ma], mode='lines', name=f'{ma[3:]}-day MA', line=dict(color=color, width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=data.index, y=data['BB_Upper'], mode='lines', name='BB Upper', line=dict(color='gray', width=1, dash='dash'), opacity=0.5), row=1, col=1)
+    fig.add_trace(go.Scatter(x=data.index, y=data['BB_Lower'], mode='lines', name='BB Lower', line=dict(color='gray', width=1, dash='dash'),
+                            fill='tonexty', fillcolor='rgba(128, 128, 128, 0.2)', opacity=0.5), row=1, col=1)
+    colors = ['#26a69a' if data['Close'].iloc[i] >= data['Open'].iloc[i] else '#ef5350' for i in range(len(data))]
+    fig.add_trace(go.Bar(x=data.index, y=data['Volume']/1e6, name='Volume (M)', marker_color=colors, showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=data.index, y=data['RSI'], mode='lines', name='RSI', line=dict(color='purple', width=2)), row=3, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
-    
-    fig.update_layout(
-        height=900,
-        hovermode='x unified',
-        template='plotly_white',
-        xaxis_rangeslider_visible=False,
-        showlegend=True
-    )
-    
+    fig.update_layout(height=900, hovermode='x unified', template='plotly_white', xaxis_rangeslider_visible=False, showlegend=True)
     fig.update_yaxes(title_text="Price ($)", row=1, col=1)
     fig.update_yaxes(title_text="Volume (M)", row=2, col=1)
     fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
-    
     st.plotly_chart(fig, use_container_width=True)
     
     # Technical Indicators Dashboard (6 charts in 2 rows)
@@ -652,507 +476,191 @@ def main():
     
     st.plotly_chart(fig2, use_container_width=True)
     
-    # Technical Indicators Summary (Always shown)
     st.markdown("### 🔧 Current Technical Indicator Values")
+    cs=st.columns(4)
+    rsi,macd,sig,sk=data['RSI'].iloc[-1],data['MACD'].iloc[-1],data['Signal'].iloc[-1],data['%K'].iloc[-1]
+    cs[0].metric("RSI (14)",f"{rsi:.1f}","Overbought"if rsi>70 else"Oversold"if rsi<30 else"Neutral")
+    cs[1].metric("MACD",f"{macd:.3f}","Bullish"if macd>sig else"Bearish")
+    cs[2].metric("Stoch%K",f"{sk:.1f}","Overbought"if sk>80 else"Oversold"if sk<20 else"Neutral")
+    bbp=((data['Close'].iloc[-1]-data['BB_Lower'].iloc[-1])/(data['BB_Upper'].iloc[-1]-data['BB_Lower'].iloc[-1]))
+    cs[3].metric("BB%B",f"{bbp:.2f}","Upper"if bbp>0.8 else"Lower"if bbp<0.2 else"Mid")
     
-    cols = st.columns(4)
+    st.markdown("---\n## ⚠️ Risk Metrics")
+    rm=calculate_risk_metrics(data)
+    cs=st.columns(4)
+    for c,(l,k,u)in zip(cs,[("Ann.Return","Annualized Return","%"),("Ann.Vol","Annualized Volatility","%"),("Sharpe","Sharpe Ratio",""),("Sortino","Sortino Ratio","")]):
+        v=rm.get(k);c.metric(l,f"{v:.2f}{u}"if v is not None else"N/A")
+    cs=st.columns(3)
+    for c,(l,k,u)in zip(cs,[("MaxDD","Max Drawdown","%"),("VaR95","VaR (95%)","%"),("Calmar","Calmar Ratio","")]):
+        v=rm.get(k);c.metric(l,f"{v:.2f}{u}"if v is not None else"N/A")
     
-    with cols[0]:
-        rsi = data['RSI'].iloc[-1]
-        rsi_status = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
-        st.metric("RSI (14)", f"{rsi:.1f}", rsi_status)
-    
-    with cols[1]:
-        macd = data['MACD'].iloc[-1]
-        signal = data['Signal'].iloc[-1]
-        macd_signal = "Bullish" if macd > signal else "Bearish"
-        st.metric("MACD", f"{macd:.3f}", macd_signal)
-    
-    with cols[2]:
-        stoch_k = data['%K'].iloc[-1]
-        stoch_status = "Overbought" if stoch_k > 80 else "Oversold" if stoch_k < 20 else "Neutral"
-        st.metric("Stochastic %K", f"{stoch_k:.1f}", stoch_status)
-    
-    with cols[3]:
-        bb_position = ((data['Close'].iloc[-1] - data['BB_Lower'].iloc[-1]) / 
-                      (data['BB_Upper'].iloc[-1] - data['BB_Lower'].iloc[-1]))
-        bb_status = "Upper Band" if bb_position > 0.8 else "Lower Band" if bb_position < 0.2 else "Middle"
-        st.metric("Bollinger Band %B", f"{bb_position:.2f}", bb_status)
-    
-    # Risk Metrics (Always shown)
-    st.markdown("---")
-    st.markdown("## ⚠️ Risk Metrics")
-    
-    risk_metrics = calculate_risk_metrics(data)
-    
-    cols = st.columns(4)
-    risk_items = [
-        ("Annualized Return", "Annualized Return", "%"),
-        ("Annualized Volatility", "Annualized Volatility", "%"),
-        ("Sharpe Ratio", "Sharpe Ratio", ""),
-        ("Sortino Ratio", "Sortino Ratio", ""),
-    ]
-    
-    for col, (label, key, unit) in zip(cols, risk_items):
-        value = risk_metrics.get(key)
-        if value is not None:
-            col.metric(label, f"{value:.2f}{unit}")
-        else:
-            col.metric(label, "N/A")
-    
-    cols = st.columns(3)
-    more_risk = [
-        ("Max Drawdown", "Max Drawdown", "%"),
-        ("VaR (95%)", "VaR (95%)", "%"),
-        ("Calmar Ratio", "Calmar Ratio", ""),
-    ]
-    
-    for col, (label, key, unit) in zip(cols, more_risk):
-        value = risk_metrics.get(key)
-        if value is not None:
-            col.metric(label, f"{value:.2f}{unit}")
-        else:
-            col.metric(label, "N/A")
-    
-    # Altman Z-Score
-    z_score, z_interpretation = calculate_altman_z_score(stock_obj, info.get('marketCap'))
-    
-    if z_score is not None:
+    z,zi=calculate_altman_z_score(stock_obj,info.get('marketCap'))
+    if z is not None:
         st.markdown("### Altman Z-Score")
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            st.metric("Z-Score", f"{z_score:.2f}", z_interpretation)
-        with col2:
-            st.info(f"""
-            **Interpretation:** {z_interpretation}
-            - **Safe Zone** (Z > 2.99): Low bankruptcy risk
-            - **Grey Zone** (1.81 ≤ Z ≤ 2.99): Moderate risk
-            - **Distress Zone** (Z < 1.81): High bankruptcy risk
-            """)
+        c1,c2=st.columns([1,2])
+        c1.metric("Z-Score",f"{z:.2f}",zi)
+        c2.info(f"**{zi}** - Safe>2.99, Grey 1.81-2.99, Distress<1.81")
     
-    # CAPM Analysis
     if show_capm:
-        st.markdown("---")
-        st.markdown("## 📈 CAPM Analysis")
-        
-        with st.spinner("Calculating CAPM metrics..."):
-            capm_results = calculate_capm(stock_obj, ticker_input)
-        
-        if capm_results:
-            cols = st.columns(4)
-            
-            with cols[0]:
-                st.metric("Beta", f"{capm_results['beta']:.3f}")
-                beta_interp = "More volatile" if capm_results['beta'] > 1 else "Less volatile" if capm_results['beta'] < 1 else "Similar"
-                st.caption(f"{beta_interp} than market")
-            
-            with cols[1]:
-                st.metric("Alpha", f"{capm_results['alpha']*100:.2f}%")
-                alpha_interp = "Outperforming" if capm_results['alpha'] > 0 else "Underperforming"
-                st.caption(f"{alpha_interp} expectations")
-            
-            with cols[2]:
-                st.metric("Expected Return", f"{capm_results['expected_return']*100:.2f}%")
-                st.caption("Per CAPM model")
-            
-            with cols[3]:
-                st.metric("R-Squared", f"{capm_results['r_squared']:.3f}")
-                st.caption(f"{capm_results['r_squared']*100:.1f}% explained by market")
-            
-            # CAPM Scatter Plot
+        st.markdown("---\n## 📈 CAPM Analysis")
+        with st.spinner("Calculating..."):cr=calculate_capm(stock_obj,ticker_input)
+        if cr:
+            cs=st.columns(4)
+            cs[0].metric("Beta",f"{cr['beta']:.3f}");cs[0].caption(('More'if cr['beta']>1 else'Less'if cr['beta']<1 else'Similar')+' volatile')
+            cs[1].metric("Alpha",f"{cr['alpha']*100:.2f}%");cs[1].caption(('Outperforming'if cr['alpha']>0 else'Underperforming')+' expectations')
+            cs[2].metric("Exp.Return",f"{cr['expected_return']*100:.2f}%");cs[2].caption("Per CAPM")
+            cs[3].metric("R²",f"{cr['r_squared']:.3f}");cs[3].caption(f"{cr['r_squared']*100:.1f}% explained")
             st.markdown("### Stock vs Market Returns")
-            
-            aligned = capm_results['aligned_data']
-            
-            fig_capm = go.Figure()
-            
-            # Scatter plot
-            fig_capm.add_trace(go.Scatter(
-                x=aligned['Market']*100,
-                y=aligned['Stock']*100,
-                mode='markers',
-                name='Weekly Returns',
-                marker=dict(size=5, color='blue', opacity=0.5)
-            ))
-            
-            # Regression line
-            x_line = np.linspace(aligned['Market'].min(), aligned['Market'].max(), 100)
-            y_line = capm_results['beta'] * x_line * 100
-            
-            fig_capm.add_trace(go.Scatter(
-                x=x_line*100,
-                y=y_line,
-                mode='lines',
-                name=f'Beta = {capm_results["beta"]:.3f}',
-                line=dict(color='red', width=2, dash='dash')
-            ))
-            
-            fig_capm.update_layout(
-                title=f'{ticker_input} vs S&P 500 Returns',
-                xaxis_title='Market Return (%)',
-                yaxis_title=f'{ticker_input} Return (%)',
-                hovermode='closest',
-                template='plotly_white',
-                height=500
-            )
-            
-            fig_capm.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-            fig_capm.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
-            
-            st.plotly_chart(fig_capm, use_container_width=True)
-            
-            # Nonlinear Beta Analysis
-            st.markdown("### Nonlinear Beta (Market Regime Analysis)")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Beta (Up Markets)", f"{capm_results['beta_up']:.3f}")
-                st.caption(f"{len(capm_results['up_market'])} weeks")
-            with col2:
-                st.metric("Beta (Down Markets)", f"{capm_results['beta_down']:.3f}")
-                st.caption(f"{len(capm_results['down_market'])} weeks")
-            with col3:
-                asymmetry_pct = (capm_results['beta_asymmetry'] / capm_results['beta'] * 100) if capm_results['beta'] != 0 else 0
-                st.metric("Beta Asymmetry", f"{capm_results['beta_asymmetry']:.3f}")
-                st.caption(f"{asymmetry_pct:.1f}% deviation")
-            
-            # Interpretation
-            if capm_results['beta_up'] > capm_results['beta_down'] + 0.15:
-                st.success("🚀 **GROWTH AMPLIFIER:** Stock gains MORE in up-markets than loses in down-markets. Positive asymmetry favors long-term holders.")
-            elif capm_results['beta_down'] > capm_results['beta_up'] + 0.15:
-                st.warning("⚠️ **DEFENSIVE AMPLIFIER:** Stock loses MORE in down-markets than gains in up-markets. Higher downside risk.")
-            else:
-                st.info("⚖️ **SYMMETRIC:** Stock behavior is similar in both market conditions.")
-            
-            # Dual-beta scatter plot
-            fig_dual = go.Figure()
-            
-            up = capm_results['up_market']
-            down = capm_results['down_market']
-            
-            fig_dual.add_trace(go.Scatter(
-                x=up['Market']*100,
-                y=up['Stock']*100,
-                mode='markers',
-                name=f'Up-Market (β={capm_results["beta_up"]:.2f})',
-                marker=dict(size=5, color='green', opacity=0.6)
-            ))
-            
-            fig_dual.add_trace(go.Scatter(
-                x=down['Market']*100,
-                y=down['Stock']*100,
-                mode='markers',
-                name=f'Down-Market (β={capm_results["beta_down"]:.2f})',
-                marker=dict(size=5, color='red', opacity=0.6)
-            ))
-            
-            # Regression lines
-            if len(up) > 1:
-                z = np.polyfit(up['Market'], up['Stock'], 1)
-                x_line = np.linspace(up['Market'].min(), up['Market'].max(), 50)
-                y_line = np.poly1d(z)(x_line)
-                fig_dual.add_trace(go.Scatter(
-                    x=x_line*100, y=y_line*100,
-                    mode='lines', name='Up-Market Trend',
-                    line=dict(color='green', width=2, dash='dash')
-                ))
-            
-            if len(down) > 1:
-                z = np.polyfit(down['Market'], down['Stock'], 1)
-                x_line = np.linspace(down['Market'].min(), down['Market'].max(), 50)
-                y_line = np.poly1d(z)(x_line)
-                fig_dual.add_trace(go.Scatter(
-                    x=x_line*100, y=y_line*100,
-                    mode='lines', name='Down-Market Trend',
-                    line=dict(color='red', width=2, dash='dash')
-                ))
-            
-            fig_dual.update_layout(
-                title='Nonlinear Beta: Market Regime Analysis',
-                xaxis_title='Market Return (%)',
-                yaxis_title=f'{ticker_input} Return (%)',
-                hovermode='closest',
-                template='plotly_white',
-                height=500
-            )
-            
-            fig_dual.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-            fig_dual.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
-            
-            st.plotly_chart(fig_dual, use_container_width=True)
+            al=cr['aligned_data']
+            fc=go.Figure()
+            fc.add_trace(go.Scatter(x=al['Market']*100,y=al['Stock']*100,mode='markers',name='Weekly',marker=dict(size=5,color='blue',opacity=0.5)))
+            xl=np.linspace(al['Market'].min(),al['Market'].max(),100)
+            fc.add_trace(go.Scatter(x=xl*100,y=cr['beta']*xl*100,mode='lines',name=f'β={cr["beta"]:.3f}',line=dict(color='red',width=2,dash='dash')))
+            fc.update_layout(title=f'{ticker_input} vs S&P500',xaxis_title='Mkt%',yaxis_title=f'{ticker_input}%',hovermode='closest',template='plotly_white',height=500)
+            fc.add_hline(y=0,line_dash="dash",line_color="gray",opacity=0.5);fc.add_vline(x=0,line_dash="dash",line_color="gray",opacity=0.5)
+            st.plotly_chart(fc,use_container_width=True)
+            st.markdown("### Nonlinear Beta")
+            c1,c2,c3=st.columns(3)
+            c1.metric("β Up",f"{cr['beta_up']:.3f}");c1.caption(f"{len(cr['up_market'])} wks")
+            c2.metric("β Down",f"{cr['beta_down']:.3f}");c2.caption(f"{len(cr['down_market'])} wks")
+            ap=(cr['beta_asymmetry']/cr['beta']*100)if cr['beta']!=0 else 0
+            c3.metric("β Asymm",f"{cr['beta_asymmetry']:.3f}");c3.caption(f"{ap:.1f}% dev")
+            if cr['beta_up']>cr['beta_down']+0.15:st.success("🚀 GROWTH AMPLIFIER")
+            elif cr['beta_down']>cr['beta_up']+0.15:st.warning("⚠️ DEFENSIVE AMPLIFIER")
+            else:st.info("⚖️ SYMMETRIC")
+            fd=go.Figure()
+            up,dn=cr['up_market'],cr['down_market']
+            fd.add_trace(go.Scatter(x=up['Market']*100,y=up['Stock']*100,mode='markers',name=f'Up β={cr["beta_up"]:.2f}',marker=dict(size=5,color='green',opacity=0.6)))
+            fd.add_trace(go.Scatter(x=dn['Market']*100,y=dn['Stock']*100,mode='markers',name=f'Down β={cr["beta_down"]:.2f}',marker=dict(size=5,color='red',opacity=0.6)))
+            if len(up)>1:
+                z=np.polyfit(up['Market'],up['Stock'],1);xl=np.linspace(up['Market'].min(),up['Market'].max(),50)
+                fd.add_trace(go.Scatter(x=xl*100,y=np.poly1d(z)(xl)*100,mode='lines',name='Up Trend',line=dict(color='green',width=2,dash='dash')))
+            if len(dn)>1:
+                z=np.polyfit(dn['Market'],dn['Stock'],1);xl=np.linspace(dn['Market'].min(),dn['Market'].max(),50)
+                fd.add_trace(go.Scatter(x=xl*100,y=np.poly1d(z)(xl)*100,mode='lines',name='Down Trend',line=dict(color='red',width=2,dash='dash')))
+            fd.update_layout(title='Market Regime',xaxis_title='Mkt%',yaxis_title=f'{ticker_input}%',template='plotly_white',height=500)
+            fd.add_hline(y=0,line_dash="dash",line_color="gray",opacity=0.5);fd.add_vline(x=0,line_dash="dash",line_color="gray",opacity=0.5)
+            st.plotly_chart(fd,use_container_width=True)
     
-    # News Section - Always show
-    st.markdown("---")
-    st.markdown("## 📰 Latest News")
-    
+    st.markdown("---\n## 📰 Latest News")
     try:
-        news = getattr(stock_obj, 'news', None)
-        if not news:
-            st.info("📭 No news available for this stock")
+        nw=getattr(stock_obj,'news',None)
+        if not nw:st.info("📭 No news")
         else:
-            st.write(f"*{len(news)} articles found*")
-            st.markdown("")
-            
-            news_count = 0
-            for i, article in enumerate(news[:10], 1):
+            st.write(f"*{len(nw)} articles*");nc=0
+            for i,a in enumerate(nw[:10],1):
                 try:
-                    content = article.get('content', {}) if isinstance(article, dict) else {}
-                    provider = (content.get('provider', {}) if isinstance(content, dict) else {}).get('displayName', 'Unknown')
-                    summary = content.get('summary') or content.get('description') or content.get('title') or 'No summary'
-                    pub_date = content.get('pubDate') or content.get('displayTime') or article.get('pubDate') or article.get('date') or 'Unknown date'
-                    
-                    if pub_date and pub_date != 'Unknown date':
-                        try:
-                            pub_date = datetime.fromisoformat(str(pub_date).replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M:%S')
-                        except:
-                            pub_date = str(pub_date)
-                    
-                    summary_short = (summary[:150] + '...') if isinstance(summary, str) and len(summary) > 150 else summary
-                    
-                    st.markdown(f"**{i}. {provider}**")
-                    st.caption(f"{summary_short}")
-                    st.caption(f"*{pub_date}*")
-                    st.markdown("")
-                    news_count += 1
-                    
-                except Exception as e:
-                    st.caption(f"{i}. Error loading article: {str(e)}")
-            
-            if news_count == 0:
-                st.info("📭 No recent news articles available for this stock")
-    except Exception as e:
-        st.info(f"📭 News data temporarily unavailable")
+                    ct=a.get('content',{})if isinstance(a,dict)else{}
+                    pr=(ct.get('provider',{})if isinstance(ct,dict)else{}).get('displayName','Unknown')
+                    sm=ct.get('summary')or ct.get('description')or ct.get('title')or'No summary'
+                    pd=ct.get('pubDate')or ct.get('displayTime')or a.get('pubDate')or a.get('date')or'Unknown'
+                    if pd!='Unknown':
+                        try:pd=datetime.fromisoformat(str(pd).replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+                        except:pass
+                    sms=(sm[:100]+'...')if isinstance(sm,str)and len(sm)>100 else sm
+                    st.markdown(f"**{i}. {pr}**");st.caption(sms);st.caption(f"*{pd}*");nc+=1
+                except:pass
+            if nc==0:st.info("📭 No articles")
+    except:st.info("📭 News unavailable")
     
-    # Institutional & Mutual Fund Holdings
     st.markdown("## 🏢 Institutional Holdings")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    c1,c2=st.columns(2)
+    with c1:
         try:
-            inst_holders = stock_obj.institutional_holders
-            if inst_holders is not None and not inst_holders.empty:
-                st.markdown("### Top Institutional Holders")
-                
-                for idx, row in inst_holders.head(10).iterrows():
-                    holder = row.get('Holder', 'Unknown')
-                    shares = row.get('Shares', 0)
-                    
-                    # Try different column names for percentage
-                    pct_held = None
-                    for col in ['% Out', 'pctHeld', 'Percent Held', '% Held', 'Pct Held']:
-                        if col in row.index and row[col] is not None:
-                            pct_held = row[col]
-                            break
-                    
-                    # Display holder info
-                    st.markdown(f"**{holder}**")
-                    if pct_held is not None and pct_held > 0:
-                        # Check if it's already in percentage form (> 1) or needs conversion
-                        pct_display = pct_held if pct_held > 1 else pct_held * 100
-                        st.caption(f"{humanize_number(shares)} shares ({pct_display:.2f}%)")
-                    else:
-                        st.caption(f"{humanize_number(shares)} shares")
-            else:
-                st.info("No institutional holdings data available")
-        except Exception as e:
-            st.info(f"Institutional holdings error: {str(e)}")
-    
-    with col2:
+            ih=stock_obj.institutional_holders
+            if ih is not None and not ih.empty:
+                st.markdown("### Top Institutional")
+                for _,r in ih.head(10).iterrows():
+                    h,s=r.get('Holder','Unknown'),r.get('Shares',0);p=None
+                    for cl in['% Out','pctHeld','Percent Held','% Held','Pct Held']:
+                        if cl in r.index and r[cl]is not None:p=r[cl];break
+                    st.markdown(f"**{h}**");st.caption(f"{humanize_number(s)} shares"+(f" ({p if p>1 else p*100:.2f}%)"if p else""))
+            else:st.info("No data")
+        except:st.info("No data")
+    with c2:
         try:
-            mutual_holders = stock_obj.mutualfund_holders
-            if mutual_holders is not None and not mutual_holders.empty:
-                st.markdown("### Top Mutual Fund Holders")
-                
-                for idx, row in mutual_holders.head(10).iterrows():
-                    holder = row.get('Holder', 'Unknown')
-                    shares = row.get('Shares', 0)
-                    
-                    # Try different column names for percentage
-                    pct_held = None
-                    for col in ['% Out', 'pctHeld', 'Percent Held', '% Held', 'Pct Held']:
-                        if col in row.index and row[col] is not None:
-                            pct_held = row[col]
-                            break
-                    
-                    # Display holder info
-                    st.markdown(f"**{holder}**")
-                    if pct_held is not None and pct_held > 0:
-                        pct_display = pct_held if pct_held > 1 else pct_held * 100
-                        st.caption(f"{humanize_number(shares)} shares ({pct_display:.2f}%)")
-                    else:
-                        st.caption(f"{humanize_number(shares)} shares")
-            else:
-                st.info("No mutual fund holdings data available")
-        except Exception as e:
-            st.info(f"Mutual fund holdings error: {str(e)}")
+            mh=stock_obj.mutualfund_holders
+            if mh is not None and not mh.empty:
+                st.markdown("### Top Mutual Funds")
+                for _,r in mh.head(10).iterrows():
+                    h,s=r.get('Holder','Unknown'),r.get('Shares',0);p=None
+                    for cl in['% Out','pctHeld','Percent Held','% Held','Pct Held']:
+                        if cl in r.index and r[cl]is not None:p=r[cl];break
+                    st.markdown(f"**{h}**");st.caption(f"{humanize_number(s)} shares"+(f" ({p if p>1 else p*100:.2f}%)"if p else""))
+            else:st.info("No data")
+        except:st.info("No data")
     
-    # Financial Statements
-    if show_financials:
-        st.markdown("---")
-        st.markdown("## 📊 Financial Statements")
-    
-    tab1, tab2, tab3 = st.tabs(["Income Statement", "Balance Sheet", "Cash Flow"])
-    
-    with tab1:
+    if show_financials:st.markdown("---\n## 📊 Financial Statements")
+    t1,t2,t3=st.tabs(["Income Statement","Balance Sheet","Cash Flow"])
+    with t1:
         try:
-            inc_stmt = stock_obj.income_stmt
-            if inc_stmt is not None and not inc_stmt.empty:
-                st.dataframe(inc_stmt.head(20), use_container_width=True)
-            else:
-                st.info("No income statement data available")
-        except:
-            st.info("No income statement data available")
-    
-    with tab2:
+            inc=stock_obj.income_stmt
+            if inc is not None and not inc.empty:st.dataframe(inc.head(20),use_container_width=True)
+            else:st.info("No data")
+        except:st.info("No data")
+    with t2:
         try:
-            balance = stock_obj.balance_sheet
-            if balance is not None and not balance.empty:
-                st.dataframe(balance.head(20), use_container_width=True)
-            else:
-                st.info("No balance sheet data available")
-        except:
-            st.info("No balance sheet data available")
-    
-    with tab3:
+            bal=stock_obj.balance_sheet
+            if bal is not None and not bal.empty:st.dataframe(bal.head(20),use_container_width=True)
+            else:st.info("No data")
+        except:st.info("No data")
+    with t3:
         try:
-            cashflow = stock_obj.cashflow
-            if cashflow is not None and not cashflow.empty:
-                st.dataframe(cashflow.head(20), use_container_width=True)
-            else:
-                st.info("No cash flow data available")
-        except:
-            st.info("No cash flow data available")
-        
-        # Analyst Recommendations (in financials section)
-        st.markdown("---")
-        st.markdown("## 🎯 Analyst Coverage")
+            cf=stock_obj.cashflow
+            if cf is not None and not cf.empty:st.dataframe(cf.head(20),use_container_width=True)
+            else:st.info("No data")
+        except:st.info("No data")
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    st.markdown("---\n## 🎯 Analyst Coverage")
+    c1,c2=st.columns(2)
+    with c1:
         try:
-            recommendations = stock_obj.recommendations_summary
-            if recommendations is not None and not recommendations.empty:
-                st.markdown("### Current Recommendations")
-                latest = recommendations.iloc[-1]
-                
-                rec_data = {
-                    'Strong Buy': latest.get('strongBuy', 0),
-                    'Buy': latest.get('buy', 0),
-                    'Hold': latest.get('hold', 0),
-                    'Sell': latest.get('sell', 0),
-                    'Strong Sell': latest.get('strongSell', 0)
-                }
-                
-                rec_data = {k: v for k, v in rec_data.items() if v > 0}
-                
-                if rec_data:
-                    fig_rec = go.Figure(data=[
-                        go.Bar(
-                            x=list(rec_data.keys()),
-                            y=list(rec_data.values()),
-                            marker_color=['#00aa00', '#66cc66', '#ffaa00', '#ff6666', '#cc0000'][:len(rec_data)]
-                        )
-                    ])
-                    
-                    fig_rec.update_layout(
-                        title="Analyst Recommendations",
-                        yaxis_title="Number of Analysts",
-                        template='plotly_white',
-                        height=300
-                    )
-                    
-                    st.plotly_chart(fig_rec, use_container_width=True)
-                else:
-                    st.info("No recommendation data")
-            else:
-                st.info("No recommendations available")
-        except:
-            st.info("No recommendations available")
-    
-    with col2:
+            rc=stock_obj.recommendations_summary
+            if rc is not None and not rc.empty:
+                st.markdown("### Current Recommendations");lt=rc.iloc[-1]
+                rd={'Strong Buy':lt.get('strongBuy',0),'Buy':lt.get('buy',0),'Hold':lt.get('hold',0),'Sell':lt.get('sell',0),'Strong Sell':lt.get('strongSell',0)}
+                rd={k:v for k,v in rd.items()if v>0}
+                if rd:
+                    fr=go.Figure(data=[go.Bar(x=list(rd.keys()),y=list(rd.values()),marker_color=['#00aa00','#66cc66','#ffaa00','#ff6666','#cc0000'][:len(rd)])])
+                    fr.update_layout(title="Recommendations",yaxis_title="# Analysts",template='plotly_white',height=300)
+                    st.plotly_chart(fr,use_container_width=True)
+                else:st.info("No data")
+            else:st.info("No data")
+        except:st.info("No data")
+    with c2:
         try:
-            upgrades = stock_obj.upgrades_downgrades
-            if upgrades is not None and not upgrades.empty:
+            ug=stock_obj.upgrades_downgrades
+            if ug is not None and not ug.empty:
                 st.markdown("### Recent Upgrades/Downgrades")
-                for idx, row in upgrades.head(5).iterrows():
-                    firm = row.get('Firm', 'Unknown')
-                    action = row.get('Action', 'Unknown')
-                    grade = row.get('ToGrade', 'N/A')
-                    st.markdown(f"**{firm}**")
-                    st.caption(f"{action} → {grade}")
-            else:
-                st.info("No upgrades/downgrades data")
-        except:
-            st.info("No upgrades/downgrades data")
+                for _,r in ug.head(5).iterrows():st.markdown(f"**{r.get('Firm','Unknown')}**");st.caption(f"{r.get('Action','Unknown')} → {r.get('ToGrade','N/A')}")
+            else:st.info("No data")
+        except:st.info("No data")
     
-    # Market Sentiment - Fear & Greed Index
+    st.markdown("---\n## 😱 Market Sentiment - Fear & Greed Index")
+    fg=get_fear_greed_index()
+    if fg and fg.get('score')is not None:
+        c1,c2=st.columns([1,2])
+        with c1:
+            sc,rt=fg['score'],fg['rating']
+            st.metric("Score",f"{sc:.1f}",rt)
+            if sc<=25:st.error("🔴 Extreme Fear - Buy opp")
+            elif sc<=45:st.warning("🟠 Fear - Cautious")
+            elif sc<=55:st.info("🟡 Neutral")
+            elif sc<=75:st.success("🟢 Greed - Optimistic")
+            else:st.error("🔴 Extreme Greed - Sell signal")
+        with c2:
+            hd=fg.get('historical')
+            if hd is not None and not hd.empty:
+                ff=go.Figure()
+                ff.add_trace(go.Scatter(x=hd['timestamp'],y=hd['score'],mode='lines',name='F&G',line=dict(color='#1e3a8a',width=2),fill='tozeroy',fillcolor='rgba(30,58,138,0.2)'))
+                ff.add_hline(y=25,line_dash="dash",line_color="red",opacity=0.5)
+                ff.add_hline(y=75,line_dash="dash",line_color="green",opacity=0.5)
+                ff.update_layout(title="Fear & Greed - History",xaxis_title="Date",yaxis_title="Score",template='plotly_white',height=300,yaxis=dict(range=[0,100]))
+                st.plotly_chart(ff,use_container_width=True)
+    else:st.info("Fear & Greed data unavailable")
+    
     st.markdown("---")
-    st.markdown("## 😱 Market Sentiment - Fear & Greed Index")
-    
-    fg_data = get_fear_greed_index()
-    
-    if fg_data and fg_data.get('score') is not None:
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            score = fg_data['score']
-            rating = fg_data['rating']
-            
-            st.metric("Current Score", f"{score:.1f}", rating)
-            
-            if score <= 25:
-                st.error("🔴 Extreme Fear - Possible buying opportunity")
-            elif score <= 45:
-                st.warning("🟠 Fear - Market is cautious")
-            elif score <= 55:
-                st.info("🟡 Neutral - Balanced market")
-            elif score <= 75:
-                st.success("🟢 Greed - Market is optimistic")
-            else:
-                st.error("🔴 Extreme Greed - Possible selling signal")
-        
-        with col2:
-            hist_df = fg_data.get('historical')
-            if hist_df is not None and not hist_df.empty:
-                fig_fg = go.Figure()
-                
-                fig_fg.add_trace(go.Scatter(
-                    x=hist_df['timestamp'],
-                    y=hist_df['score'],
-                    mode='lines',
-                    name='Fear & Greed Score',
-                    line=dict(color='#1e3a8a', width=2),
-                    fill='tozeroy',
-                    fillcolor='rgba(30, 58, 138, 0.2)'
-                ))
-                
-                # Reference lines
-                fig_fg.add_hline(y=25, line_dash="dash", line_color="red", opacity=0.5)
-                fig_fg.add_hline(y=75, line_dash="dash", line_color="green", opacity=0.5)
-                
-                fig_fg.update_layout(
-                    title="Fear & Greed Index - Historical Trend",
-                    xaxis_title="Date",
-                    yaxis_title="Score (0-100)",
-                    template='plotly_white',
-                    height=300,
-                    yaxis=dict(range=[0, 100])
-                )
-                
-                st.plotly_chart(fig_fg, use_container_width=True)
-    else:
-        st.info("Fear & Greed Index data not available")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style='text-align: center; color: #6b7280; padding: 20px;'>
-        <p>📊 Stock Analysis Dashboard | Data provided by Yahoo Finance</p>
-        <p style='font-size: 12px;'>⚠️ This tool is for educational purposes only. Not financial advice.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("""<div style='text-align:center;color:#6b7280;padding:20px;'><p>📊 Stock Analysis Dashboard | Yahoo Finance</p><p style='font-size:12px;'>⚠️ Educational purposes only. Not financial advice.</p></div>""",unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
