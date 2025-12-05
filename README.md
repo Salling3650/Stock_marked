@@ -23,19 +23,48 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/mwx107/Stock_marked.git
+git clone https://github.com/Salling3650/Stock_marked.git
 cd Stock_marked
 
 # Install dependencies
-pip install yfinance pandas numpy matplotlib scipy statsmodels requests folium
+pip install -r requirements.txt
 ```
 
 ### Usage
 
-1. **Setup**: Run the first code cell to load all imports and utilities
-2. **Select Stock**: Edit `user_input = 'AAPL'` to any stock symbol
-3. **Run Analysis**: Execute the selection cell to load stock data
-4. **Explore**: Each analysis section can be run independently
+#### Running the Streamlit Dashboard
+
+```bash
+streamlit run src/app.py
+```
+
+#### Using Jupyter Notebooks
+
+1. Navigate to the `notebooks/` folder
+2. Open any notebook (e.g., `01_stock_analysis.ipynb`)
+3. Run the setup cells to import dependencies
+4. Edit the stock symbol and run analysis sections
+
+---
+
+## Project Structure
+
+```
+Stock_marked/
+├── src/                         # Source code
+│   ├── app.py                   # Streamlit dashboard
+│   └── functions.py             # Core utility functions
+├── notebooks/                   # Jupyter notebooks
+│   ├── 01_stock_analysis.ipynb
+│   ├── 02_portfolio_analysis.ipynb
+│   ├── 03_cointegration_analysis.ipynb
+│   └── 04_economy.ipynb
+├── data/                        # Data files (gitignored)
+├── assets/                      # Static files and outputs
+├── config/                      # Configuration files (gitignored)
+├── docs/                        # Documentation
+└── tests/                       # Unit tests
+```
 
 ---
 

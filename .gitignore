@@ -209,7 +209,12 @@ __marimo__/
 /.DS_Store
 /note.txt
 /note.text
-/fredapi.txt
-/stock_index_world_map.html
-/functions.cpython
-/__pycache__/functions.cpython-313.pyc
+
+# Project-specific ignores
+config/api_keys.txt
+config/*.txt
+data/*
+!data/.gitkeep
+assets/*.html
+*.cpython
+__pycache__/
