@@ -217,6 +217,5 @@ data/*
 !data/.gitkeep
 assets/*.html
 notebooks/*.html
-stock_index_world_map.html
 *.cpython
 __pycache__/
