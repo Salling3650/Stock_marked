@@ -264,3 +264,322 @@ def calculate_technical_indicators(data: pd.DataFrame) -> pd.DataFrame:
     df['OBV'] = (df['Volume'] * ((df['Close'] > df['Close'].shift(1)).astype(int) * 2 - 1)).cumsum()
 
     return df
+
+def display_balance_sheet_html(ticker_obj):
+    """
+    Display a formatted balance sheet as HTML table with assets, liabilities, and equity.
+    
+    Parameters:
+    -----------
+    ticker_obj : yfinance.Ticker
+        The yfinance ticker object with balance_sheet data
+    """
+    from IPython.display import HTML
+    
+    # Define balance sheet groups
+    assets_items = [
+        "SECTION: Current Assets",
+        "Cash And Cash Equivalents",
+        "Other Short Term Investments",
+        "Cash Cash Equivalents And Short Term Investments",
+        "Receivables",
+        "Accounts Receivable",
+        "Inventory",
+        "Prepaid Assets",
+        "Other Current Assets",
+        "TOTAL: Current Assets",
+        "",
+        "SECTION: Non-Current Assets",
+        "Net PPE",
+        "Gross PPE",
+        "Accumulated Depreciation",
+        "Goodwill And Other Intangible Assets",
+        "Goodwill",
+        "Other Intangible Assets",
+        "Investments And Advances",
+        "Long Term Equity Investment",
+        "Other Non Current Assets",
+        "TOTAL: Total Non Current Assets",
+        "",
+        "TOTAL: Total Assets"
+    ]
+
+    liabilities_items = [
+        "SECTION: Current Liabilities",
+        "Payables And Accrued Expenses",
+        "Accounts Payable",
+        "Current Accrued Expenses",
+        "Income Tax Payable",
+        "Current Debt",
+        "Current Debt And Capital Lease Obligation",
+        "Other Current Borrowings",
+        "Line Of Credit",
+        "TOTAL: Current Liabilities",
+        "",
+        "SECTION: Non-Current Liabilities",
+        "Long Term Debt",
+        "Long Term Debt And Capital Lease Obligation",
+        "Non Current Deferred Liabilities",
+        "Other Non Current Liabilities",
+        "TOTAL: Total Non Current Liabilities Net Minority Interest",
+        "",
+        "TOTAL: Total Liabilities Net Minority Interest"
+    ]
+
+    equity_items = [
+        "SECTION: Equity",
+        "Stockholders Equity",
+        "Common Stock Equity",
+        "Common Stock",
+        "Capital Stock",
+        "Additional Paid In Capital",
+        "Retained Earnings",
+        "Treasury Stock",
+        "Other Equity Adjustments",
+        "Minority Interest",
+        "TOTAL: Total Equity Gross Minority Interest"
+    ]
+
+    df = ticker_obj.balance_sheet.copy()
+
+    # Build HTML table
+    html = """
+    <style>
+        .balance-sheet {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+        }
+        .balance-sheet th {
+            background-color: #2c3e50;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: bold;
+            border: 1px solid #34495e;
+        }
+        .balance-sheet td {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+        }
+        .section-header {
+            font-weight: bold;
+            background-color: #ecf0f1;
+            font-size: 15px;
+        }
+        .total-row {
+            font-weight: bold;
+            background-color: #f8f9fa;
+            border-top: 2px solid #2c3e50;
+        }
+        .indent {
+            padding-left: 30px;
+        }
+        .amount {
+            text-align: right;
+        }
+        .empty-row {
+            height: 10px;
+            background-color: white;
+            border: none;
+        }
+    </style>
+
+    <table class="balance-sheet">
+        <tr>
+            <th colspan="2" style="text-align: center;">ASSETS</th>
+            <th colspan="2" style="text-align: center;">LIABILITIES & EQUITY</th>
+        </tr>
+    """
+
+    # Helper function to format value
+    def format_value(val):
+        if val == "" or val is None:
+            return ""
+        try:
+            return f"${float(val):,.0f}"
+        except:
+            return ""
+
+    # Helper function to get value from df
+    def get_value(item):
+        if item in df.index:
+            return df.loc[item].values[0]
+        return ""
+
+    # Build rows
+    max_rows = max(len(assets_items), len(liabilities_items) + len(equity_items) + 2)
+
+    asset_idx = 0
+    liab_idx = 0
+    equity_idx = 0
+    in_equity = False
+
+    for i in range(max_rows):
+        html += "    <tr>"
+        
+        # Left side (Assets)
+        if asset_idx < len(assets_items):
+            item = assets_items[asset_idx]
+            if item == "":
+                html += '<td colspan="2" class="empty-row"></td>'
+            elif item.startswith("TOTAL:"):
+                actual_item = item.replace("TOTAL: ", "")
+                val = get_value(actual_item)
+                html += f'<td class="total-row">{actual_item}</td><td class="total-row amount">{format_value(val)}</td>'
+            elif item.startswith("SECTION:"):
+                section_name = item.replace("SECTION: ", "")
+                html += f'<td colspan="2" class="section-header">{section_name}</td>'
+            else:
+                val = get_value(item)
+                if val != "":
+                    html += f'<td class="indent">{item}</td><td class="amount">{format_value(val)}</td>'
+                else:
+                    html += f'<td colspan="2"></td>'
+            asset_idx += 1
+        else:
+            html += '<td colspan="2"></td>'
+        
+        # Right side (Liabilities & Equity)
+        if not in_equity and liab_idx < len(liabilities_items):
+            item = liabilities_items[liab_idx]
+            if item == "":
+                html += '<td colspan="2" class="empty-row"></td>'
+            elif item.startswith("TOTAL:"):
+                actual_item = item.replace("TOTAL: ", "")
+                val = get_value(actual_item)
+                html += f'<td class="total-row">{actual_item}</td><td class="total-row amount">{format_value(val)}</td>'
+            elif item.startswith("SECTION:"):
+                section_name = item.replace("SECTION: ", "")
+                html += f'<td colspan="2" class="section-header">{section_name}</td>'
+            else:
+                val = get_value(item)
+                if val != "":
+                    html += f'<td class="indent">{item}</td><td class="amount">{format_value(val)}</td>'
+                else:
+                    html += f'<td colspan="2"></td>'
+            liab_idx += 1
+            if liab_idx >= len(liabilities_items):
+                in_equity = True
+        elif in_equity and equity_idx < len(equity_items):
+            item = equity_items[equity_idx]
+            if item == "":
+                html += '<td colspan="2" class="empty-row"></td>'
+            elif item.startswith("TOTAL:"):
+                actual_item = item.replace("TOTAL: ", "")
+                val = get_value(actual_item)
+                html += f'<td class="total-row">{actual_item}</td><td class="total-row amount">{format_value(val)}</td>'
+            elif item.startswith("SECTION:"):
+                section_name = item.replace("SECTION: ", "")
+                html += f'<td colspan="2" class="section-header">{section_name}</td>'
+            else:
+                val = get_value(item)
+                if val != "":
+                    html += f'<td class="indent">{item}</td><td class="amount">{format_value(val)}</td>'
+                else:
+                    html += f'<td colspan="2"></td>'
+            equity_idx += 1
+        else:
+            html += '<td colspan="2"></td>'
+        
+        html += "</tr>\n"
+
+    html += "</table>"
+    
+    return HTML(html)
+
+def plot_analyst_recommendations(ticker_obj, selected_stock: str):
+    """
+    Plot analyst recommendations summary as a bar chart.
+    
+    Parameters:
+    -----------
+    ticker_obj : yfinance.Ticker
+        The yfinance ticker object
+    selected_stock : str
+        Stock symbol for display in chart title
+    """
+    import matplotlib.pyplot as plt
+    
+    try:
+        rec = ticker_obj.recommendations_summary
+    except (NameError, AttributeError):
+        display(Markdown('**`ticker` not defined. Run STOCK SELECTION cell first.**'))
+        return
+
+    if rec is None or (isinstance(rec, pd.DataFrame) and rec.empty):
+        display(Markdown('**No recommendations_summary available.**'))
+        return
+
+    try:
+        if isinstance(rec, pd.DataFrame):
+            latest = rec.iloc[-1]
+            
+            # Column name mappings
+            col_map = {
+                'strongBuy': 'Strong Buy', 'strong_buy': 'Strong Buy', 'Strong Buy': 'Strong Buy',
+                'buy': 'Buy', 'Buy': 'Buy', 
+                'hold': 'Hold', 'Hold': 'Hold',
+                'sell': 'Sell', 'Sell': 'Sell', 
+                'strongSell': 'Strong Sell', 'strong_sell': 'Strong Sell', 'Strong Sell': 'Strong Sell'
+            }
+            
+            # Extract counts
+            counts = {
+                col_map[col]: latest[col] 
+                for col in rec.columns 
+                if col in col_map and pd.notna(latest[col]) and latest[col] > 0
+            }
+            
+            if not counts:
+                display(Markdown('**No valid recommendation data in recent period.**'))
+                return
+            
+            # Create series in proper order
+            order = ['Strong Buy', 'Buy', 'Hold', 'Sell', 'Strong Sell']
+            s = pd.Series(counts).reindex([p for p in order if p in counts])
+            
+            # Create plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Color mapping
+            color_map = {
+                'Strong Buy': '#00aa00', 
+                'Buy': '#66cc66', 
+                'Hold': '#ffaa00', 
+                'Sell': '#ff6666', 
+                'Strong Sell': '#cc0000'
+            }
+            colors = [color_map.get(label, '#7f7f7f') for label in s.index]
+            
+            # Bar chart
+            bars = ax.bar(s.index, s.values, color=colors, edgecolor='black', alpha=0.85, width=0.6)
+            
+            # Title with period if available
+            period = f" (Period: {latest['period']})" if 'period' in rec.columns else ""
+            ax.set_title(f'Current Analyst Recommendations — {selected_stock}{period}', 
+                        fontsize=14, fontweight='bold')
+            ax.set_ylabel('Number of Analysts', fontsize=12)
+            ax.set_xlabel('Recommendation', fontsize=12)
+            plt.xticks(rotation=45, ha='right')
+            ax.grid(axis='y', alpha=0.3, linestyle='--')
+            
+            # Annotations
+            for bar in bars:
+                if (h := bar.get_height()) > 0:
+                    ax.annotate(f'{int(h)}', 
+                              xy=(bar.get_x() + bar.get_width() / 2, h), 
+                              xytext=(0, 3),
+                              textcoords='offset points', 
+                              ha='center', va='bottom', 
+                              fontsize=11, fontweight='bold')
+            
+            plt.tight_layout()
+            plt.show()
+        else:
+            display(Markdown(f'**Unexpected type: {type(rec)}**'))
+    except Exception as e:
+        display(Markdown(f'**Error:** {e}'))
+        import traceback
+        print(traceback.format_exc())
