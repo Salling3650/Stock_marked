@@ -118,9 +118,6 @@ Stock_marked/
 </table>
 
 ---
-
-## Analysis Sections
-
 ## Analysis Sections
 
 ### Technical Analysis Dashboard
@@ -192,41 +189,6 @@ Stock_marked/
 | **OI Distribution** | Visual charts with median/mean strikes |
 | **IV Term Structure** | Implied volatility across time |
 | **Strike Analysis** | Detailed OI, volume, and IV by strike |
-
----
-
-## Stock Examples
-
-<table>
-<tr>
-<td align="center">
-<img src="https://img.shields.io/badge/AAPL-Apple-999999?style=for-the-badge&logo=apple" alt="Apple"/>
-<br><code>user_input = 'AAPL'</code>
-</td>
-<td align="center">
-<img src="https://img.shields.io/badge/GOOGL-Google-4285F4?style=for-the-badge&logo=google" alt="Google"/>
-<br><code>user_input = 'GOOGL'</code>
-</td>
-<td align="center">
-<img src="https://img.shields.io/badge/TSLA-Tesla-CC0000?style=for-the-badge&logo=tesla" alt="Tesla"/>
-<br><code>user_input = 'TSLA'</code>
-</td>
-</tr>
-<tr>
-<td align="center">
-<img src="https://img.shields.io/badge/NVDA-NVIDIA-76B900?style=for-the-badge&logo=nvidia" alt="NVIDIA"/>
-<br><code>user_input = 'NVDA'</code>
-</td>
-<td align="center">
-<img src="https://img.shields.io/badge/MSFT-Microsoft-00A4EF?style=for-the-badge&logo=microsoft" alt="Microsoft"/>
-<br><code>user_input = 'MSFT'</code>
-</td>
-<td align="center">
-<img src="https://img.shields.io/badge/SPY-S&P_500-FFD700?style=for-the-badge" alt="S&P 500"/>
-<br><code>user_input = 'SPY'</code>
-</td>
-</tr>
-</table>
 
 ---
 
