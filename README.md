@@ -1,15 +1,15 @@
 <div align="center">
 
-# Comprehensive Stock Analysis Dashboard
+# Stock Analysis Dashboard
 
-### *Professional-grade stock market analysis powered by Python*
+### *Stock market analysis using Python*
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Jupyter](https://img.shields.io/badge/Jupyter-Notebook-orange.svg)](https://jupyter.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![yfinance](https://img.shields.io/badge/Data-yfinance-red.svg)](https://pypi.org/project/yfinance/)
 
-*A comprehensive Jupyter Notebook for in-depth stock market analysis, combining technical indicators, fundamental data, options analytics, and market intelligence in one powerful tool.*
+*Jupyter Notebooks for stock market analysis, combining technical indicators, fundamental data, options analytics, and market intelligence in one tool.*
 
 [Features](#features) • [Quick Start](#quick-start) • [Analysis Sections](#analysis-sections) • [Examples](#stock-examples)
 
@@ -247,22 +247,6 @@ folium        # Interactive maps
 ```bash
 pip install yfinance pandas numpy matplotlib scipy statsmodels requests folium
 ```
-
----
-
-## Project Structure
-
-```
-Stock_marked/
-│
-├── Stock analysis.ipynb           # Main analysis notebook
-├── functions.py                   # Helper functions and utilities
-├── README.md                      # Documentation (you are here!)
-├── stock_index_world_map.html     # Generated world map
-└── fredapi.txt                    # API configurations
-```
-
----
 
 ## Usage Tips
 
