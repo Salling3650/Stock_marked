@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from matplotlib.dates import DateFormatter, MonthLocator, YearLocator, DayLocator, WeekdayLocator
+from matplotlib.dates import DateFormatter, MonthLocator, YearLocator, DayLocator
 from typing import Dict, Optional
 import requests
 import time
@@ -25,21 +25,10 @@ def safe_float(value):
 
 def get_current_price_and_date(recent_hist, data, info):
     """Get current price and last date from available sources."""
-    current_price = None
-    last_date = None
-    
-    if isinstance(recent_hist, pd.DataFrame) and not recent_hist.empty:
-        current_price = safe_float(recent_hist['Close'].iloc[-1])
-        last_date = recent_hist.index[-1]
-    
-    if current_price is None and isinstance(data, pd.DataFrame) and not data.empty:
-        current_price = safe_float(data['Close'].iloc[-1])
-        last_date = data.index[-1]
-    
-    if current_price is None:
-        current_price = info.get('currentPrice') or info.get('regularMarketPrice')
-    
-    return current_price, last_date
+    for df in [recent_hist, data]:
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return safe_float(df['Close'].iloc[-1]), df.index[-1]
+    return info.get('currentPrice') or info.get('regularMarketPrice'), None
 
 
 def humanize_number(x):
@@ -51,117 +40,76 @@ def humanize_number(x):
     if pd.isna(x):
         return "N/A"
     abs_x = abs(x)
-    if abs_x >= 1e12:
-        return f"{x/1e12:.2f}T"
-    if abs_x >= 1e9:
-        return f"{x/1e9:.2f}B"
-    if abs_x >= 1e6:
-        return f"{x/1e6:.2f}M"
-    if abs_x >= 1e3:
-        return f"{x/1e3:.2f}K"
+    scales = [(1e12, 'T'), (1e9, 'B'), (1e6, 'M'), (1e3, 'K')]
+    for scale, suffix in scales:
+        if abs_x >= scale:
+            return f"{x/scale:.2f}{suffix}"
     return f"{x:.0f}"
 
 def get_historical_values(data, column='Close', periods=[30, 90, 180, 365]):
     """Get historical values for specified periods (in days) for any column."""
-    values = []
-    if isinstance(data, pd.DataFrame) and not data.empty and column in data.columns and len(data) > 1:
-        # Clean the data first - remove NaN values
-        clean_data = data[column].dropna()
-        if clean_data.empty:
-            return values
-            
-        for period in periods:
-            if len(clean_data) >= period:
-                val = clean_data.iloc[-period]
-                values.append(safe_float(val))
-            elif len(clean_data) > 0:
-                # If we don't have enough data, use the oldest available value
-                val = clean_data.iloc[0]
-                values.append(safe_float(val))
-            else:
-                values.append(None)
-    return values
+    if not (isinstance(data, pd.DataFrame) and not data.empty and column in data.columns and len(data) > 1):
+        return []
+    clean_data = data[column].dropna()
+    if clean_data.empty:
+        return []
+    return [safe_float(clean_data.iloc[-p if len(clean_data) >= p else 0]) for p in periods]
 
 # Utility functions
 def get_ticker(symbol: str):
     """Get or create a yfinance Ticker object."""
     global ticker
-    if ticker is not None and hasattr(ticker, 'ticker') and ticker.ticker == symbol:
+    if ticker is not None:
         return ticker
     ticker = yf.Ticker(symbol)
     return ticker
 
 def fetch_stock_data(symbol: str, period: str = '1y'):
     """Fetch stock data, using cache if available."""
-    global stocks
     cache_key = f"{symbol}_{period}"
-    if cache_key in stocks:
-        return stocks[cache_key]
-    ticker = get_ticker(symbol)
-    data = ticker.history(period=period)
-    if not data.empty:
-        stocks[cache_key] = data
-    return data
+    if cache_key not in stocks:
+        data = get_ticker(symbol).history(period=period)
+        if not data.empty:
+            stocks[cache_key] = data
+    return stocks.get(cache_key, pd.DataFrame())
 
 def setup_date_formatting(ax, period):
     """Set up appropriate date formatting for x-axis based on period."""
+    formatters = {
+        ('1d', '5d'): (DateFormatter('%H:%M'), DayLocator()),
+        ('1wk', '1mo'): (DateFormatter('%b %d'), DayLocator(interval=7)),
+        ('3mo', '6mo'): (DateFormatter('%b %d'), MonthLocator(interval=1)),
+        ('1y', '2y'): (DateFormatter('%b %Y'), MonthLocator(interval=3)),
+        ('5y', '10y', 'max'): (DateFormatter('%Y'), YearLocator()),
+    }
+    default = (DateFormatter('%b %Y'), MonthLocator(interval=3))
     
-    if period in ['1d', '5d']:
-        # For very short periods, show hours/minutes
-        ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
-        ax.xaxis.set_major_locator(DayLocator())
-    elif period in ['1wk', '1mo']:
-        # For weeks/months, show days
-        ax.xaxis.set_major_formatter(DateFormatter('%b %d'))
-        ax.xaxis.set_major_locator(DayLocator(interval=7))  # Weekly ticks
-    elif period in ['3mo', '6mo']:
-        # For 3-6 months, show weeks/months
-        ax.xaxis.set_major_formatter(DateFormatter('%b %d'))
-        ax.xaxis.set_major_locator(MonthLocator(interval=1))
-    elif period in ['1y', '2y']:
-        # For 1-2 years, show months
-        ax.xaxis.set_major_formatter(DateFormatter('%b %Y'))
-        ax.xaxis.set_major_locator(MonthLocator(interval=3))  # Quarterly ticks
-    elif period in ['5y', '10y', 'max']:
-        # For longer periods, show years
-        ax.xaxis.set_major_formatter(DateFormatter('%Y'))
-        ax.xaxis.set_major_locator(YearLocator())
-    else:
-        # Default fallback
-        ax.xaxis.set_major_formatter(DateFormatter('%b %Y'))
+    for periods, (fmt, locator) in formatters.items():
+        if period in periods:
+            ax.xaxis.set_major_formatter(fmt)
+            ax.xaxis.set_major_locator(locator)
+            return
+    ax.xaxis.set_major_formatter(default[0])
 
 def make_cnn_api_request(api_url: str, timeout: int = 10) -> Optional[requests.Response]:
     """Make a request to CNN Business API with retry logic and multiple headers."""
     headers_list = [
-        {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Referer": "https://www.cnn.com/",
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Referer": "https://www.cnn.com/",
-        },
+        {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", "Accept": "application/json", "Referer": "https://www.cnn.com/"},
+        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "application/json", "Referer": "https://www.cnn.com/"},
         {"User-Agent": "curl/7.88.1", "Accept": "*/*"},
     ]
-
     session = requests.Session()
-    retries = Retry(total=2, backoff_factor=0.8, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount("https://", HTTPAdapter(max_retries=retries))
-
-    resp = None
+    session.mount("https://", HTTPAdapter(max_retries=Retry(total=2, backoff_factor=0.8, status_forcelist=[429, 500, 502, 503, 504])))
+    
     for h in headers_list:
         try:
             resp = session.get(api_url, headers=h, timeout=timeout)
             if resp.status_code == 200:
-                break
-            time.sleep(0.5)
+                return resp
         except requests.exceptions.RequestException:
-            resp = None
-            time.sleep(0.5)
-
-    return resp
+            pass
+        time.sleep(0.5)
+    return None
 
 def display_structured_data_as_markdown(data, title: str, symbol: str, field_mappings: Dict[str, str] = None):
     """Display structured data (list of dicts) as formatted markdown."""
@@ -202,15 +150,14 @@ def display_structured_data_as_markdown(data, title: str, symbol: str, field_map
 
                         # Add extra fields if present
                         extras = []
-                        extra_fields = ['since', 'startDate', 'appointed', 'age', 'years', 'pctHeld', 'value']
-                        for field in extra_fields:
+                        extra_fields = {'pctHeld': '{:.2f}%', 'value': '${:,.0f}'}
+                        for field in ['since', 'startDate', 'appointed', 'age', 'years', 'pctHeld', 'value']:
                             if field in item and item[field] is not None:
-                                if field in ['pctHeld']:
-                                    extras.append(f"{item[field]:.2f}%")
-                                elif field in ['value']:
-                                    extras.append(f"${item[field]:,.0f}")
+                                if field in extra_fields:
+                                    extras.append(extra_fields[field].format(item[field]))
                                 else:
-                                    extras.append(f"{field.replace('pctHeld', '% held').replace('startDate', 'since')}: {item[field]}")
+                                    label = field.replace('startDate', 'since')
+                                    extras.append(f"{label}: {item[field]}")
 
                         if extras:
                             details += " (" + ", ".join(extras) + ")"
@@ -229,40 +176,32 @@ def display_structured_data_as_markdown(data, title: str, symbol: str, field_map
 def calculate_technical_indicators(data: pd.DataFrame) -> pd.DataFrame:
     """Calculate common technical indicators for stock data."""
     df = data.copy()
-
-    # Moving averages
-    df['MA_20'] = df['Close'].rolling(window=20).mean()
-    df['MA_50'] = df['Close'].rolling(window=50).mean()
-
-    # RSI
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-
+    close = df['Close']
+    
+    # Moving averages & RSI
+    df['MA_20'], df['MA_50'] = close.rolling(20).mean(), close.rolling(50).mean()
+    delta = close.diff()
+    gain, loss = (delta.where(delta > 0, 0)).rolling(14).mean(), (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + gain / loss))
+    
     # MACD
-    df['EMA_12'] = df['Close'].ewm(span=12, adjust=False).mean()
-    df['EMA_26'] = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = df['EMA_12'] - df['EMA_26']
-    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Histogram'] = df['MACD'] - df['MACD_Signal']
-
+    ema_12, ema_26 = close.ewm(span=12, adjust=False).mean(), close.ewm(span=26, adjust=False).mean()
+    macd = ema_12 - ema_26
+    df['MACD'] = macd
+    df['MACD_Signal'] = macd.ewm(span=9, adjust=False).mean()
+    df['MACD_Histogram'] = macd - df['MACD_Signal']
+    
     # Bollinger Bands
-    df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    df['STD_20'] = df['Close'].rolling(window=20).std()
-    df['Upper_Band'] = df['SMA_20'] + (df['STD_20'] * 2)
-    df['Lower_Band'] = df['SMA_20'] - (df['STD_20'] * 2)
-
+    sma_20, std_20 = close.rolling(20).mean(), close.rolling(20).std()
+    df['Upper_Band'], df['Lower_Band'] = sma_20 + 2*std_20, sma_20 - 2*std_20
+    
     # Stochastic Oscillator
-    high_14 = df['High'].rolling(window=14).max()
-    low_14 = df['Low'].rolling(window=14).min()
-    df['%K'] = 100 * ((df['Close'] - low_14) / (high_14 - low_14))
-    df['%D'] = df['%K'].rolling(window=3).mean()
-
+    high_14, low_14 = df['High'].rolling(14).max(), df['Low'].rolling(14).min()
+    df['%K'] = 100 * ((close - low_14) / (high_14 - low_14))
+    df['%D'] = df['%K'].rolling(3).mean()
+    
     # On-Balance Volume
-    df['OBV'] = (df['Volume'] * ((df['Close'] > df['Close'].shift(1)).astype(int) * 2 - 1)).cumsum()
-
+    df['OBV'] = (df['Volume'] * ((close > close.shift(1)).astype(int) * 2 - 1)).cumsum()
     return df
 
 def display_balance_sheet_html(ticker_obj):
@@ -635,78 +574,30 @@ def create_mini_chart(values, current_value, color='#3b82f6'):
 
 
 def create_card_html(name, value, change=None, chart=None, subtitle=None):
-    """
-    Create an HTML card for metric display.
-    
-    Parameters:
-    -----------
-    name : str
-        Metric name/label
-    value : str
-        Metric value to display
-    change : float, optional
-        Percentage change for color-coding (-1 to 1 or percentage)
-    chart : str, optional
-        Base64-encoded chart image URI
-    subtitle : str, optional
-        Additional subtitle text
-    
-    Returns:
-    --------
-    str
-        HTML string for the card
-    """
-    # Format change indicator
+    """Create an HTML card for metric display."""
     change_html = ''
     if change is not None:
         color = "#10b981" if change > 0 else "#ef4444" if change < 0 else "#6b7280"
         arrow = "▲" if change > 0 else "▼" if change < 0 else "●"
         change_html = f'<div style="color: {color}; font-size: 12px; margin-top: 4px;">{arrow} {abs(change):.1f}%</div>'
     
-    # Format subtitle
     subtitle_html = f'<div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">{subtitle}</div>' if subtitle else ''
-    
-    # Style template
     card_style = 'background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'
-    
-    # Content template
     content = f'<div style="color: #6b7280; font-size: 13px; font-weight: 500; margin-bottom: 8px;">{name}</div><div style="color: #111827; font-size: 24px; font-weight: 700;">{value}</div>{subtitle_html}{change_html}'
     
-    # If chart present, display side-by-side
     if chart:
         return f'<div style="{card_style} display: flex; justify-content: space-between; align-items: center; gap: 12px;"><div style="flex: 1;">{content}</div><div style="flex-shrink: 0;"><img src="{chart}" style="width: 70px; height: 40px;"></div></div>'
-    else:
-        return f'<div style="{card_style}">{content}</div>'
+    return f'<div style="{card_style}">{content}</div>'
 
 
 def create_performance_card_html(name, value):
-    """
-    Create an HTML card for performance/risk metrics.
-    
-    Parameters:
-    -----------
-    name : str
-        Metric name/label
-    value : float or None
-        Metric value (None for N/A)
-    
-    Returns:
-    --------
-    str
-        HTML string for the card
-    """
+    """Create an HTML card for performance/risk metrics."""
     if value is None:
         return create_card_html(name, 'N/A')
     
-    # Determine color and symbol
     color = "#10b981" if value > 0 else "#ef4444" if value < 0 else "#6b7280"
     symbol = "▲" if value > 0 else "▼" if value < 0 else "●"
-    
-    # Format value - check if it should be percentage or decimal
-    if any(k in name for k in ['%', 'Return', 'Volatility', 'Drawdown', 'VaR']):
-        formatted_value = f'{symbol} {abs(value):.1f}%'
-    else:
-        formatted_value = f'{symbol} {abs(value):.2f}'
+    formatted_value = f'{symbol} {abs(value):.1f}%' if any(k in name for k in ['%', 'Return', 'Volatility', 'Drawdown', 'VaR']) else f'{symbol} {abs(value):.2f}'
     
     card_style = 'background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'
     return f'<div style="{card_style}"><div style="color: #6b7280; font-size: 13px; font-weight: 500; margin-bottom: 8px;">{name}</div><div style="color: {color}; font-size: 24px; font-weight: 700;">{formatted_value}</div></div>'
@@ -1165,48 +1056,21 @@ def plot_capm_analysis(selected_stock: str, capm_metrics: Dict) -> None:
 
 
 def format_holdings_markdown(holders_df: pd.DataFrame, shares_outstanding: Optional[int], title: str, top_n: int = 10) -> str:
-    """
-    Format holdings data as markdown with shares and percentages.
-    
-    Parameters:
-    -----------
-    holders_df : pd.DataFrame
-        DataFrame with holdings data (columns: 'Holder' and 'Shares')
-    shares_outstanding : int, optional
-        Total shares outstanding for percentage calculation
-    title : str
-        Title for the holdings section
-    top_n : int
-        Number of top holdings to display (default: 10)
-    
-    Returns:
-    --------
-    str
-        Formatted markdown string
-    """
+    """Format holdings data as markdown with shares and percentages."""
     if holders_df is None or holders_df.empty:
         return f"**{title}:** Not available"
     
     lines = [f"### {title}", ""]
-    
     for i, row in enumerate(holders_df.head(top_n).itertuples(index=False), 1):
         try:
-            # Extract holder name and shares from row
             holder = getattr(row, 'Holder', list(row)[0] if row else 'Unknown')
-            shares = getattr(row, 'Shares', list(row)[1] if len(list(row)) > 1 else 0)
-            
-            if shares:
-                shares = float(shares)
-                shares_str = f"{humanize_number(shares)} shares"
-                if shares_outstanding and shares_outstanding > 0:
-                    shares_str += f" ({(shares/shares_outstanding)*100:.2f}%)"
-            else:
-                shares_str = 'N/A'
-            
-            lines.append(f"{i}. **{holder}** — {shares_str}")
+            shares = float(getattr(row, 'Shares', list(row)[1] if len(list(row)) > 1 else 0) or 0)
+            shares_str = f"{humanize_number(shares)} shares"
+            if shares_outstanding and shares > 0:
+                shares_str += f" ({(shares/shares_outstanding)*100:.2f}%)"
+            lines.append(f"{i}. **{holder}** — {shares_str if shares else 'N/A'}")
         except:
             lines.append(f"{i}. **Unknown** — N/A")
-    
     return '\n\n'.join(lines)
 
 
@@ -1262,47 +1126,61 @@ def display_company_holdings(selected_stock: str, ticker_obj) -> None:
 # =====================================================
 
 def fetch_single_stock(country, ticker):
-    """Fetch 5-day history and calculate daily change for a stock ticker."""
-    import sys, io
+    """Fetch 2-day history and calculate daily change for a stock ticker (optimized for speed)."""
     try:
-        old_stderr, sys.stderr = sys.stderr, io.StringIO()
-        hist = yf.Ticker(ticker).history(period='5d')
-        sys.stderr = old_stderr
+        hist = yf.Ticker(ticker).history(period='2d', timeout=10)
         if len(hist) >= 2:
             latest, prev = hist['Close'].iloc[-1], hist['Close'].iloc[-2]
             return {'country': country, 'ticker': ticker, 'daily_change': ((latest - prev) / prev) * 100, 'close': latest}
-    except:
-        sys.stderr = old_stderr
+    except Exception:
+        pass
     return None
 
 
-def get_daily_changes(country_indices):
-    """Fetch daily changes for multiple stock indices using concurrent requests."""
+# Global cache for world map data (expires after 1 hour)
+_world_map_cache = {'data': None, 'timestamp': None}
+
+def get_daily_changes(country_indices, use_cache=True):
+    """Fetch daily changes for multiple stock indices using concurrent requests (optimized).
+    
+    Args:
+        country_indices: Dict of country names to ticker symbols
+        use_cache: If True, use cached data if available (< 1 hour old)
+    
+    Returns:
+        DataFrame with country, ticker, daily_change, close columns
+    """
+    import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    
+    # Check cache first
+    if use_cache and _world_map_cache['data'] is not None:
+        elapsed = time.time() - _world_map_cache['timestamp']
+        if elapsed < 3600:  # Cache valid for 1 hour
+            return _world_map_cache['data'].copy()
+    
+    # Increased max_workers from 10 to 20 for better parallelization
+    with ThreadPoolExecutor(max_workers=20) as executor:
         futures = {executor.submit(fetch_single_stock, c, t): c for c, t in country_indices.items()}
         data = [f.result() for f in as_completed(futures) if f.result()]
-    return pd.DataFrame(data)
+    
+    df = pd.DataFrame(data)
+    
+    # Update cache
+    _world_map_cache['data'] = df
+    _world_map_cache['timestamp'] = time.time()
+    
+    return df
 
 
 def get_color(chg):
     """Return color code based on daily change percentage."""
-    if chg <= -2:
-        return '#8B0000'
-    elif chg <= -1:
-        return '#FF0000'
-    elif chg < 0:
-        return '#FF8C00'
-    elif chg <= 1:
-        return '#FFFF00'
-    elif chg <= 2:
-        return '#90EE90'
-    else:
-        return '#006400'
+    colors = [(-float('inf'), '#8B0000'), (-2, '#FF0000'), (-1, '#FF8C00'), (0, '#FFFF00'), (1, '#90EE90')]
+    return next((c for t, c in reversed(colors) if chg > t), '#006400')
 
 
 def create_world_map(df):
-    """Create folium world map with stock market data overlay.
+    """Create folium world map with stock market data overlay (optimized).
     
     Args:
         df: DataFrame with columns ['country', 'ticker', 'daily_change', 'close']
@@ -1315,21 +1193,30 @@ def create_world_map(df):
     m = folium.Map(location=[20, 0], zoom_start=2, tiles='CartoDB positron', 
                    zoom_control=False, scrollWheelZoom=False, doubleClickZoom=False, boxZoom=False, keyboard=False)
     
-    world_geo = requests.get('https://raw.githubusercontent.com/python-visualization/folium/master/examples/data/world-countries.json').json()
+    # Fetch GeoJSON with timeout and better error handling
+    try:
+        session = requests.Session()
+        response = session.get('https://raw.githubusercontent.com/python-visualization/folium/master/examples/data/world-countries.json', timeout=10)
+        world_geo = response.json()
+    except Exception as e:
+        print(f"Warning: Could not fetch GeoJSON: {e}. Map may be incomplete.")
+        return m
     
     folium.Choropleth(geo_data=world_geo, name='Stock Index Daily Change', data=df, columns=['country', 'daily_change'],
                       key_on='feature.properties.name', fill_color='RdYlGn', fill_opacity=0.8, line_opacity=0.3,
                       legend_name='Daily Change (%)', nan_fill_color='lightgray', nan_fill_opacity=0.4).add_to(m)
     
+    # Pre-build lookup dict for O(1) access instead of O(n) iteration per country
+    country_lookup = {feature['properties']['name']: feature for feature in world_geo.get('features', [])}
+    
     for _, row in df.iterrows():
-        for feature in world_geo['features']:
-            if feature['properties']['name'] == row['country']:
-                popup = f"<div style='font-family: Arial; width: 200px;'><b style='font-size: 14px;'>{row['country']}</b><br><hr style='margin: 5px 0;'><b>Index:</b> {row['ticker']}<br><b>Daily Change:</b> <span style='color: {'green' if row['daily_change'] >= 0 else 'red'}; font-size: 16px; font-weight: bold;'>{row['daily_change']:+.2f}%</span><br><b>Close:</b> {row['close']:.2f}</div>"
-                color = get_color(row['daily_change'])
-                folium.GeoJson({'type': 'FeatureCollection', 'features': [feature]},
-                              style_function=lambda x, c=color: {'fillColor': c, 'color': 'black', 'weight': 1, 'fillOpacity': 0.8},
-                              popup=folium.Popup(popup, max_width=250), name=row['country']).add_to(m)
-                break
+        feature = country_lookup.get(row['country'])
+        if feature:
+            popup = f"<div style='font-family: Arial; width: 200px;'><b style='font-size: 14px;'>{row['country']}</b><br><hr style='margin: 5px 0;'><b>Index:</b> {row['ticker']}<br><b>Daily Change:</b> <span style='color: {'green' if row['daily_change'] >= 0 else 'red'}; font-size: 16px; font-weight: bold;'>{row['daily_change']:+.2f}%</span><br><b>Close:</b> {row['close']:.2f}</div>"
+            color = get_color(row['daily_change'])
+            folium.GeoJson({'type': 'FeatureCollection', 'features': [feature]},
+                          style_function=lambda x, c=color: {'fillColor': c, 'color': 'black', 'weight': 1, 'fillOpacity': 0.8},
+                          popup=folium.Popup(popup, max_width=250), name=row['country']).add_to(m)
     
     folium.LayerControl().add_to(m)
     return m
@@ -1357,3 +1244,362 @@ def save_world_map(world_map, output_dir='assets'):
     world_map.save(str(filename))
     
     return str(filename)
+
+
+# =============================================================================
+# FRED/Economic Data Functions
+# =============================================================================
+
+def fetch_fred_series(fred, series_id, start_date=None, use_cache=True):
+    """Fetch FRED series data with aggressive caching.
+    
+    Args:
+        fred: FRED API client instance
+        series_id: FRED series ID string
+        start_date: Optional start date for filtering (YYYY-MM-DD format)
+        use_cache: Use in-memory cache to avoid repeated API calls
+    
+    Returns:
+        pandas.Series with filtered data, or None if fetch fails
+    """
+    import pandas as pd
+    
+    # In-memory cache for series data
+    if not hasattr(fetch_fred_series, '_cache'):
+        fetch_fred_series._cache = {}
+    
+    cache_key = f"{series_id}_{start_date}"
+    
+    if use_cache and cache_key in fetch_fred_series._cache:
+        return fetch_fred_series._cache[cache_key].copy()
+    
+    try:
+        data = fred.get_series(series_id)
+        if start_date:
+            data = data.loc[start_date:]
+        
+        if use_cache:
+            fetch_fred_series._cache[cache_key] = data.copy()
+        
+        return data
+    except Exception as e:
+        print(f"Error fetching {series_id}: {e}")
+        return None
+
+
+def add_recession_shading(ax, fred, start_date=None, use_cache=True):
+    """Add grey shading to plot for US recession periods with caching.
+    
+    Args:
+        ax: matplotlib axes object
+        fred: FRED API client instance
+        start_date: Optional start date for filtering recession data
+        use_cache: Use cached recession data to avoid repeated API calls
+    """
+    # Cache recession data globally since it's used frequently
+    if not hasattr(add_recession_shading, '_recession_cache'):
+        add_recession_shading._recession_cache = {}
+    
+    try:
+        cache_key = f"USREC_{start_date}"
+        
+        if use_cache and cache_key in add_recession_shading._recession_cache:
+            starts, ends = add_recession_shading._recession_cache[cache_key]
+        else:
+            recession = fred.get_series('USREC')
+            if start_date:
+                recession = recession.loc[start_date:]
+            
+            # Vectorized approach for better performance
+            in_recession = (recession == 1).astype(int)
+            changes = in_recession.diff()
+            
+            starts = recession.index[changes == 1]
+            ends = recession.index[changes == -1]
+            
+            # Handle edge cases
+            if len(recession) > 0 and recession.iloc[0] == 1:
+                starts = pd.DatetimeIndex([recession.index[0]]).union(starts)
+            if len(recession) > 0 and recession.iloc[-1] == 1:
+                ends = ends.union(pd.DatetimeIndex([recession.index[-1]]))
+            
+            if use_cache:
+                add_recession_shading._recession_cache[cache_key] = (starts, ends)
+        
+        # Draw shading
+        for start, end in zip(starts, ends):
+            ax.axvspan(start, end, color='grey', alpha=0.3, zorder=0)
+            
+    except Exception as e:
+        print(f"Could not add recession shading: {e}")
+
+
+def plot_fred_series(fred, series_id, start_date=None, ax=None, title=None, 
+                     ylabel=None, add_recessions=True, **plot_kwargs):
+    """Plot a single FRED series with optional recession shading.
+    
+    Args:
+        fred: FRED API client instance
+        series_id: FRED series ID string
+        start_date: Optional start date for filtering
+        ax: Optional matplotlib axes (creates new figure if None)
+        title: Optional plot title (fetches from FRED if None)
+        ylabel: Optional y-axis label (fetches from FRED if None)
+        add_recessions: Whether to add recession shading
+        **plot_kwargs: Additional arguments passed to plot()
+    
+    Returns:
+        matplotlib axes object
+    """
+    import matplotlib.pyplot as plt
+    
+    # Fetch data
+    data = fetch_fred_series(fred, series_id, start_date)
+    if data is None:
+        return None
+    
+    # Create axes if not provided
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Get series info for labels if not provided
+    if title is None or ylabel is None:
+        try:
+            info = fred.get_series_info(series_id)
+            if title is None:
+                title = info.get('title', series_id)
+            if ylabel is None:
+                ylabel = info.get('units', 'Value')
+        except:
+            title = title or series_id
+            ylabel = ylabel or 'Value'
+    
+    # Plot
+    ax.plot(data.index, data.values, **plot_kwargs)
+    ax.set_title(title)
+    ax.set_xlabel('Date')
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    
+    # Add recession shading
+    if add_recessions:
+        add_recession_shading(ax, fred, start_date)
+    
+    return ax
+
+
+def calculate_yoy_change(data, periods=12):
+    """Calculate year-over-year percentage change.
+    
+    Args:
+        data: pandas Series
+        periods: Number of periods for change calculation (default 12 for monthly data)
+    
+    Returns:
+        pandas Series with percentage changes
+    """
+    return data.pct_change(periods) * 100
+
+
+def plot_inflation_rate(fred, series_id, start_date=None, ax=None, title=None, 
+                        add_recessions=True, **plot_kwargs):
+    """Plot year-over-year inflation rate for a price index series.
+    
+    Args:
+        fred: FRED API client instance
+        series_id: FRED series ID for price index (e.g., 'CPIAUCSL')
+        start_date: Optional start date for filtering
+        ax: Optional matplotlib axes
+        title: Optional plot title
+        add_recessions: Whether to add recession shading
+        **plot_kwargs: Additional arguments passed to plot()
+    
+    Returns:
+        matplotlib axes object
+    """
+    import matplotlib.pyplot as plt
+    
+    # Fetch data
+    data = fetch_fred_series(fred, series_id, start_date)
+    if data is None:
+        return None
+    
+    # Calculate inflation rate
+    inflation_rate = calculate_yoy_change(data, periods=12)
+    
+    # Create axes if not provided
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Get title if not provided
+    if title is None:
+        try:
+            info = fred.get_series_info(series_id)
+            base_title = info.get('title', series_id)
+            title = f'{base_title} - YoY % Change'
+        except:
+            title = f'{series_id} - YoY % Change'
+    
+    # Plot
+    ax.plot(inflation_rate.index, inflation_rate.values, **plot_kwargs)
+    ax.set_title(title)
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Year-over-Year % Change')
+    ax.grid(True, alpha=0.3)
+    
+    # Add recession shading
+    if add_recessions:
+        add_recession_shading(ax, fred, start_date)
+    
+    return ax
+
+
+def fetch_multiple_series_concurrent(fred, series_dict, start_date=None, max_workers=20):
+    """Fetch multiple FRED series concurrently with aggressive parallelization.
+    
+    Args:
+        fred: FRED API client instance
+        series_dict: Dict mapping series IDs to display names
+        start_date: Optional start date for filtering
+        max_workers: Maximum number of concurrent workers (default 20 for speed)
+    
+    Returns:
+        Dict mapping display names to pandas Series (None for failed fetches)
+    """
+    import concurrent.futures
+    
+    def fetch_single(series_id):
+        try:
+            data = fred.get_series(series_id)
+            if start_date:
+                data = data.loc[start_date:]
+            return data
+        except Exception as e:
+            print(f"Error fetching {series_id}: {e}")
+            return None
+    
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all at once for maximum parallelization
+        future_to_series = {executor.submit(fetch_single, sid): (sid, name) 
+                           for sid, name in series_dict.items()}
+        
+        for future in concurrent.futures.as_completed(future_to_series):
+            sid, name = future_to_series[future]
+            results[name] = future.result()
+    
+    return results
+
+
+def plot_sector_inflation_grid(fred, sector_series_dict, start_date=None, 
+                               figsize=(15, 15), add_recessions=True):
+    """Plot multiple sector inflation rates in a grid layout.
+    
+    Args:
+        fred: FRED API client instance
+        sector_series_dict: Dict mapping series IDs to sector names
+        start_date: Optional start date for filtering
+        figsize: Figure size tuple
+        add_recessions: Whether to add recession shading
+    
+    Returns:
+        matplotlib figure and axes array
+    """
+    import matplotlib.pyplot as plt
+    import math
+    
+    # Fetch all series concurrently
+    results = fetch_multiple_series_concurrent(fred, sector_series_dict, start_date)
+    
+    # Calculate grid dimensions
+    n_series = len(sector_series_dict)
+    n_cols = 3
+    n_rows = math.ceil(n_series / n_cols)
+    
+    # Create grid
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    axes = axes.flatten() if n_rows * n_cols > 1 else [axes]
+    
+    # Plot each series
+    for i, (series_id, name) in enumerate(sector_series_dict.items()):
+        data = results.get(name)
+        ax = axes[i]
+        
+        if data is not None:
+            # Calculate YoY change
+            rate = calculate_yoy_change(data, periods=12)
+            ax.plot(rate.index, rate.values)
+            ax.set_title(name)
+            ax.set_xlabel('Date')
+            ax.set_ylabel('YoY % Change')
+            ax.grid(True, alpha=0.3)
+            
+            if add_recessions:
+                add_recession_shading(ax, fred, start_date)
+        else:
+            ax.text(0.5, 0.5, f'{name}\nData Not Available', 
+                   transform=ax.transAxes, ha='center', va='center')
+            ax.set_title(name)
+    
+    # Hide unused subplots
+    for i in range(n_series, len(axes)):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    return fig, axes
+
+
+def clear_fred_cache():
+    """Clear all FRED data caches to force fresh API calls."""
+    if hasattr(fetch_fred_series, "_cache"):
+        fetch_fred_series._cache.clear()
+    if hasattr(add_recession_shading, "_recession_cache"):
+        add_recession_shading._recession_cache.clear()
+    print("FRED caches cleared")
+
+
+def prefetch_common_series(fred, start_date=None):
+    """Pre-fetch commonly used series to warm up the cache.
+    
+    Args:
+        fred: FRED API client instance
+        start_date: Optional start date for filtering
+    
+    Returns:
+        Number of series successfully cached
+    """
+    import matplotlib.pyplot as plt
+    
+    common_series = {
+        "USREC": "Recession Indicator",
+        "PAYEMS": "Employment",
+        "JTSHIR": "Job Hires",
+        "EXPGSC1": "Exports",
+        "IMPGSC1": "Imports",
+        "CPIAUCSL": "CPI",
+    }
+    
+    print("Warming up cache with common series...")
+    results = fetch_multiple_series_concurrent(fred, common_series, start_date, max_workers=20)
+    
+    # Store in cache
+    if not hasattr(fetch_fred_series, "_cache"):
+        fetch_fred_series._cache = {}
+    
+    for series_id, name in common_series.items():
+        if results.get(name) is not None:
+            cache_key = f"{series_id}_{start_date}"
+            fetch_fred_series._cache[cache_key] = results[name].copy()
+    
+    # Pre-cache recession data
+    if results.get("Recession Indicator") is not None:
+        if not hasattr(add_recession_shading, "_recession_cache"):
+            add_recession_shading._recession_cache = {}
+        fig, ax = plt.subplots()
+        add_recession_shading(ax, fred, start_date)
+        plt.close(fig)
+    
+    success_count = sum(1 for v in results.values() if v is not None)
+    print(f"Cached {success_count}/{len(common_series)} series")
+    return success_count
+

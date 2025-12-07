@@ -219,3 +219,4 @@ assets/*.html
 notebooks/*.html
 *.cpython
 __pycache__/
+config
