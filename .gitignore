@@ -220,3 +220,4 @@ notebooks/*.html
 *.cpython
 __pycache__/
 config
+src/.DS_Store
